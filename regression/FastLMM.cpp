@@ -1,24 +1,19 @@
+#pragma GCC diagnostic ignored "-Wint-in-bool-context"
+
 #include "FastLMM.h"
+
+#include "libsrc/MathMatrix.h"
+#include "third/eigen/Eigen/Dense"
+#include "third/gsl/include/gsl/gsl_cdf.h"  // use gsl_cdf_chisq_Q
+
 #include "EigenMatrix.h"
 #include "EigenMatrixInterface.h"
-
-#include "Eigen/Dense"
 #include "GSLMinimizer.h"
-#include "gsl/gsl_cdf.h"  // use gsl_cdf_chisq_Q
 
+// set environment variable FASTLMM_DEBUG to enable debug information
 // #define EIGEN_NO_DEBUG
-#undef DEBUG
+// #undef DEBUG
 // #define DEBUG
-
-#ifdef DEBUG
-#include <fstream>
-void dumpToFile(const Eigen::MatrixXf& mat, const char* fn) {
-  std::ofstream out(fn);
-  out << mat.rows() << "\t" << mat.cols() << "\n";
-  out << mat;
-  out.close();
-}
-#endif
 
 #define PI 3.1415926535897
 
@@ -27,9 +22,18 @@ static double goalFunction(double x, void* param);
 class FastLMM::Impl {
  public:
   Impl(FastLMM::Test test, FastLMM::Model model)
-      : test(test), model(model), needToCenterGentype(true) {}
+      : test(test), model(model), needToCenterGentype(true) {
+    FastLMM::Impl::showDebug = false;
+  }
   int FitNullModel(Matrix& mat_Xnull, Matrix& mat_y,
                    const EigenMatrix& kinshipU, const EigenMatrix& kinshipS) {
+    //
+    if (std::getenv("FASTLMM_DEBUG")) {
+      FastLMM::Impl::showDebug = true;
+    } else {
+      FastLMM::Impl::showDebug = false;
+    }
+
     // sanity check
     if (mat_Xnull.rows != mat_y.rows) return -1;
     if (mat_Xnull.rows != kinshipU.mat.rows()) return -1;
@@ -60,10 +64,10 @@ class FastLMM::Impl {
       delta = exp(-10. + i * 0.2);
       getBetaSigma2(delta);
       loglik[i] = getLogLikelihood(delta);
-#ifdef DEBUG
-      fprintf(stderr, "%d\tdelta=%g\tll=%lf\t", i, delta, loglik[i]);
-      fprintf(stderr, "beta(0)=%lf\tsigma2=%lf\n", beta(0), sigma2);
-#endif
+      if (FastLMM::Impl::showDebug) {
+        fprintf(stderr, "%d\tdelta=%g\tll=%lf\t", i, delta, loglik[i]);
+        fprintf(stderr, "beta(0)=%lf\tsigma2=%lf\n", beta(0), sigma2);
+      }
       if (std::isnan(loglik[i])) {
         continue;
       }
@@ -76,10 +80,10 @@ class FastLMM::Impl {
       fprintf(stderr, "Cannot optimize\n");
       return -1;
     }
-#if 0
-    fprintf(stderr, "maxIndex = %d\tll=%lf\t\tbeta(0)=%lf\tsigma2=%lf\n",
-            maxIndex, maxLogLik, beta(0), sigma2);
-#endif
+    if (FastLMM::Impl::showDebug) {
+      fprintf(stderr, "maxIndex = %d\tll=%lf\t\tbeta(0)=%lf\tsigma2=%lf\n",
+              maxIndex, maxLogLik, beta(0), sigma2);
+    }
 
     if (maxIndex == 0 || maxIndex == 100) {
       // on the boundary
@@ -98,21 +102,22 @@ class FastLMM::Impl {
         this->delta = start;
       } else {
         this->delta = minimizer.getX();
-#ifdef DEBUG
-        fprintf(stderr, "minimization succeed when delta = %g, sigma2 = %g\n",
-                this->delta, this->sigma2);
-        dumpToFile(kinshipS.mat, "S.mat");
-        dumpToFile(kinshipU.mat, "U.mat");
-#endif
+        if (FastLMM::Impl::showDebug) {
+          fprintf(stderr, "minimization succeed when delta = %g, sigma2 = %g\n",
+                  this->delta, this->sigma2);
+          dumpToFile(kinshipS.mat, "S.mat");
+          dumpToFile(kinshipU.mat, "U.mat");
+        }
       }
     }
-// store some intermediate results
-#ifdef DEBUG
-    fprintf(stderr, "delta = sigma2_e/sigma2_g, and sigma2 is sigma2_g\n");
-    fprintf(stderr, "maxIndex = %d, delta = %g, Try brent\n", maxIndex, delta);
-    fprintf(stderr, "beta[0][0] = %g\t sigma2_g = %g\tsigma2_e = %g\n",
-            beta(0, 0), this->sigma2, delta * sigma2);
-#endif
+    // store some intermediate results
+    if (FastLMM::Impl::showDebug) {
+      fprintf(stderr, "delta = sigma2_e/sigma2_g, and sigma2 is sigma2_g\n");
+      fprintf(stderr, "maxIndex = %d, delta = %g, Try brent\n", maxIndex,
+              delta);
+      fprintf(stderr, "beta[0][0] = %g\t sigma2_g = %g\tsigma2_e = %g\n",
+              beta(0, 0), this->sigma2, delta * sigma2);
+    }
     if (this->test == FastLMM::LRT) {
       this->nullLikelihood = getLogLikelihood(this->delta);
     } else if (this->test == FastLMM::SCORE) {
@@ -171,7 +176,8 @@ class FastLMM::Impl {
           (x.transpose() * x).eval().ldlt().solve(x.transpose() * y);
       double altSumResidual2 =
           ((altUy.array() - (altUx * altBeta).array()).square() /
-           (altLambda.array() + delta)).sum();
+           (altLambda.array() + delta))
+              .sum();
 
       double altSigma2;
       if (model == FastLMM::MLE) {
@@ -196,7 +202,8 @@ class FastLMM::Impl {
             0.5 *
             log((altUx.transpose() *
                  (altLambda.array() + delta).inverse().matrix().asDiagonal() *
-                 altUx).determinant());
+                 altUx)
+                    .determinant());
       }
       this->altLikelihood = ret;
       this->stat = 2.0 * (this->altLikelihood -
@@ -214,17 +221,18 @@ class FastLMM::Impl {
       } else {
         u_g_center = (U.transpose() * g).eval().array();
       }
-#ifdef DEBUG
-      dumpToFile(U, "U");
-      dumpToFile(lambda, "lambda");
-      dumpToFile(g, "g");
-      dumpToFile(uResid, "uResid");
-      dumpToFile(u_g_center, "u_g_center");
-#endif
+      if (FastLMM::Impl::showDebug) {
+        dumpToFile(U, "U");
+        dumpToFile(lambda, "lambda");
+        dumpToFile(g, "g");
+        dumpToFile(uResid, "uResid");
+        dumpToFile(u_g_center, "u_g_center");
+      }
 
-      this->Ustat = (((u_g_center) * (this->uResid).array()) /
-                     (lambda.array() + delta)).sum() /
-                    this->sigma2;
+      this->Ustat =
+          (((u_g_center) * (this->uResid).array()) / (lambda.array() + delta))
+              .sum() /
+          this->sigma2;
       // when there is no covariate: this->Vstat = (u_g_center.square() /
       // (lambda.array() + delta)).sum() / this->sigma2 ;
       this->Vstat = ((u_g_center).matrix().transpose() * this->scaledK *
@@ -283,18 +291,19 @@ class FastLMM::Impl {
   }
   double getSumResidual2(double delta) {
     return ((this->uy.array() - (this->ux * this->beta).array()).square() /
-            (this->lambda.array() + delta)).sum();
+            (this->lambda.array() + delta))
+        .sum();
   }
   void getBetaSigma2(double delta) {
-// Eigen::MatrixXf x = (this->lambda.array() +
-// delta).sqrt().matrix().asDiagonal() * this->ux;
-// Eigen::MatrixXf y = (this->lambda.array() +
-// delta).sqrt().matrix().asDiagonal() * this->uy;
-// this->beta = (x.transpose() * x).eval().ldlt().solve(x.transpose() * y);
-#ifdef DEBUG
-    dumpToFile(ux, "ux");
-    dumpToFile(uy, "uy");
-#endif
+    // Eigen::MatrixXf x = (this->lambda.array() +
+    // delta).sqrt().matrix().asDiagonal() * this->ux;
+    // Eigen::MatrixXf y = (this->lambda.array() +
+    // delta).sqrt().matrix().asDiagonal() * this->uy;
+    // this->beta = (x.transpose() * x).eval().ldlt().solve(x.transpose() * y);
+    if (FastLMM::Impl::showDebug) {
+      dumpToFile(ux, "ux");
+      dumpToFile(uy, "uy");
+    }
     this->beta =
         (ux.transpose() *
          (this->lambda.array() + delta).abs().inverse().matrix().asDiagonal() *
@@ -337,7 +346,8 @@ class FastLMM::Impl {
           0.5 *
           log((this->ux.transpose() *
                (this->lambda.array() + delta).inverse().matrix().asDiagonal() *
-               this->ux).determinant());
+               this->ux)
+                  .determinant());
     }
     // printf("ll = %g\n", ret);
     this->nullLikelihood = ret;
@@ -409,7 +419,8 @@ class FastLMM::Impl {
       // alpha = 1' * K^{-1}  = u1' * lambda^{-1} * u
       alpha = (u1.transpose() *
                this->lambda.array().abs().inverse().matrix().asDiagonal() *
-               U.transpose()).row(0);
+               U.transpose())
+                  .row(0);
       initialized = true;
       // fprintf(stderr, "initialized\n");
     }
@@ -519,9 +530,26 @@ class FastLMM::Impl {
     Eigen::Map<const Eigen::MatrixXd> g2D(g2.data(), n, 1);
     Eigen::MatrixXf g2E = g2D.cast<float>();
 
-    *out = (g1E.array() * (this->lambda.array() + delta).inverse() *
-            g2E.array()).sum() /
-           this->sigma2;
+    *out =
+        (g1E.array() * (this->lambda.array() + delta).inverse() * g2E.array())
+            .sum() /
+        this->sigma2;
+  }
+  void GetCovXX(FloatMatrixRef& g1, FloatMatrixRef& g2,
+                const EigenMatrix& kinshipU, const EigenMatrix& kinshipS,
+                float* out) {
+    // const int n = g1.size();
+    // Eigen::Map<const Eigen::MatrixXd> g1D(g1.data(), n, 1);
+    // Eigen::MatrixXf g1E = g1D.cast<float>();
+    // Eigen::Map<const Eigen::MatrixXd> g2D(g2.data(), n, 1);
+    // Eigen::MatrixXf g2E = g2D.cast<float>();
+
+    REF_TO_EIGEN(g1, g1E);
+    REF_TO_EIGEN(g2, g2E);
+    *out =
+        (g1E.array() * (this->lambda.array() + delta).inverse() * g2E.array())
+            .sum() /
+        this->sigma2;
   }
   void GetCovXZ(const std::vector<double>& g, const EigenMatrix& kinshipU,
                 const EigenMatrix& kinshipS, std::vector<double>* out) {
@@ -542,6 +570,29 @@ class FastLMM::Impl {
       (*out)[i] = (double)res(0, i);
     }
   }
+  void GetCovXZ(FloatMatrixRef& g, const EigenMatrix& kinshipU,
+                const EigenMatrix& kinshipS, FloatMatrixRef& out) {
+    // // const Eigen::MatrixXf& U = kinshipU.mat;
+    // const int n = g.size();
+    // Eigen::Map<const Eigen::MatrixXd> gD(g.data(), n, 1);
+    // Eigen::MatrixXf gE = gD.cast<float>();
+    REF_TO_EIGEN(g, gE);
+    REF_TO_EIGEN(out, gOut);
+
+    // res: 1 by nCov matrix
+    // const int nCov = ux.cols();
+    assert(gOut.rows() == 1 && gOut.cols() == ux.cols());
+
+    //    Eigen::MatrixXf res =
+    gOut = gE.transpose() *
+           (this->lambda.array() + delta).inverse().matrix().asDiagonal() * ux /
+           sigma2;
+
+    // out->resize(nCov);
+    // for (int i = 0; i < nCov; ++i) {
+    //   (*out)[i] = (double)res(0, i);
+    // }
+  }
 
   int TransformCentered(std::vector<double>* geno, const EigenMatrix& kinshipU,
                         const EigenMatrix& kinshipS) {
@@ -557,6 +608,21 @@ class FastLMM::Impl {
     gD = g.cast<double>();
     return 0;
   }
+  int TransformCentered(FloatMatrixRef& geno, const EigenMatrix& kinshipU,
+                        const EigenMatrix& kinshipS) {
+    // // cast type double to float
+    // int n = geno->size();
+    // Eigen::Map<Eigen::MatrixXd> gD(geno->data(), n, 1);
+    // Eigen::MatrixXf g = gD.cast<float>();
+    REF_TO_EIGEN(geno, g);
+    Eigen::RowVectorXf g_mean = g.colwise().mean();
+    const Eigen::MatrixXf& U = kinshipU.mat;
+    g = U.transpose() * (g.rowwise() - g_mean);
+
+    // // cast type back
+    // gD = g.cast<double>();
+    return 0;
+  }
   int Transform(std::vector<double>* geno, const EigenMatrix& kinshipU,
                 const EigenMatrix& kinshipS) {
     // type conversion
@@ -568,6 +634,20 @@ class FastLMM::Impl {
 
     // cast type back
     gD = g.cast<double>();
+    return 0;
+  }
+  int Transform(FloatMatrixRef& geno, const EigenMatrix& kinshipU,
+                const EigenMatrix& kinshipS) {
+    // // type conversion
+    // int n = geno->size();
+    // Eigen::Map<Eigen::MatrixXd> gD(geno->data(), n, 1);
+    // Eigen::MatrixXf g = gD.cast<float>();
+    REF_TO_EIGEN(geno, g);
+    const Eigen::MatrixXf& U = kinshipU.mat;
+    g = U.transpose() * g;
+
+    // // cast type back
+    // gD = g.cast<double>();
     return 0;
   }
   int GetWeight(Vector* out) const {
@@ -612,7 +692,12 @@ class FastLMM::Impl {
   double sigmaK;
   double sigma1;
   bool needToCenterGentype;
+
+ private:
+  static bool showDebug;
 };
+
+bool FastLMM::Impl::showDebug;
 
 //////////////////////////////////////////////////
 // FastLMM Interface
@@ -688,9 +773,18 @@ void FastLMM::GetCovXX(const std::vector<double>& g1,
                        double* out) {
   return this->impl->GetCovXX(g1, g2, kinshipU, kinshipS, out);
 }
+void FastLMM::GetCovXX(FloatMatrixRef& g1, FloatMatrixRef& g2,
+                       const EigenMatrix& kinshipU, const EigenMatrix& kinshipS,
+                       float* out) {
+  return this->impl->GetCovXX(g1, g2, kinshipU, kinshipS, out);
+}
 void FastLMM::GetCovXZ(const std::vector<double>& g,
                        const EigenMatrix& kinshipU, const EigenMatrix& kinshipS,
                        std::vector<double>* out) {
+  return this->impl->GetCovXZ(g, kinshipU, kinshipS, out);
+}
+void FastLMM::GetCovXZ(FloatMatrixRef& g, const EigenMatrix& kinshipU,
+                       const EigenMatrix& kinshipS, FloatMatrixRef& out) {
   return this->impl->GetCovXZ(g, kinshipU, kinshipS, out);
 }
 int FastLMM::TransformCentered(std::vector<double>* x,
@@ -698,7 +792,15 @@ int FastLMM::TransformCentered(std::vector<double>* x,
                                const EigenMatrix& kinshipS) {
   return this->impl->TransformCentered(x, kinshipU, kinshipS);
 }
+int FastLMM::TransformCentered(FloatMatrixRef& x, const EigenMatrix& kinshipU,
+                               const EigenMatrix& kinshipS) {
+  return this->impl->TransformCentered(x, kinshipU, kinshipS);
+}
 int FastLMM::Transform(std::vector<double>* x, const EigenMatrix& kinshipU,
+                       const EigenMatrix& kinshipS) {
+  return this->impl->Transform(x, kinshipU, kinshipS);
+}
+int FastLMM::Transform(FloatMatrixRef& x, const EigenMatrix& kinshipU,
                        const EigenMatrix& kinshipS) {
   return this->impl->Transform(x, kinshipU, kinshipS);
 }

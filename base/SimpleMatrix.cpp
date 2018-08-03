@@ -67,7 +67,7 @@ int SimpleMatrix::readFile(const char* f) {
  *
  * will write row names and column names.
  */
-int SimpleMatrix::writeFile(const char* f) {
+int SimpleMatrix::writeFile(const char* f) const {
   FileWriter fw(f);
   const int nr = this->nrow();
   const int nc = this->ncol();
@@ -216,7 +216,6 @@ int SimpleMatrix::dropRow(const std::vector<std::string>& name) {
 int SimpleMatrix::dropRow(const std::vector<int>& index) {
   removeByIndex(index, &mat);
   removeByIndex(index, &rowName);
-  removeByIndex(index, &colName);
   return 0;
 }
 

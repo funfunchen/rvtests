@@ -1,15 +1,18 @@
 #include "ModelManager.h"
 
-#include "Model.h"
-#include "ModelFitter.h"
-#include "ModelParser.h"
-#include "TabixUtil.h"
+#include "src/Model.h"
+#include "src/ModelFitter.h"
+#include "src/ModelParser.h"
+#include "src/TabixUtil.h"
 
-#include "DataConsolidator.h"
-#include "LinearAlgebra.h"
-#include "ModelUtil.h"
-#include "Result.h"
-#include "Summary.h"
+#include "src/DataConsolidator.h"
+#include "src/LinearAlgebra.h"
+#include "src/ModelUtil.h"
+#include "src/Result.h"
+#include "src/Summary.h"
+
+// include the header file for your model
+#include "src/SingleDummy.h"
 
 //////////////////////////////////////////////////
 bool ModelManager::hasFamilyModel() const {
@@ -30,7 +33,7 @@ int ModelManager::create(const std::string& type,
   std::vector<std::string> argModelName;
   ModelParser parser;
 
-  stringTokenize(modelList, ",", &argModelName);
+  stringTokenize(modelList, ",", "[", "]", &argModelName);
   for (size_t i = 0; i < argModelName.size(); i++) {
     // TODO: check parse results
     parser.parse(argModelName[i]);
@@ -61,14 +64,36 @@ int ModelManager::create(const std::string& modelType,
     } else if (modelName == "famlrt") {
       model.push_back(new SingleVariantFamilyLRT);
     } else if (modelName == "famgrammargamma") {
-      model.push_back(new SingleVariantFamilyGrammarGamma);
+      std::string afMethod;
+      parser.assign("af", &afMethod, "mean");
+      if (afMethod == "kinship") {
+        logger->info(
+            "FamGrammarGamma will output kinship-adjusted allele frequencies");
+        model.push_back(
+            new SingleVariantFamilyGrammarGamma(GrammarGamma::AF_KINSHIP));
+      } else if (afMethod == "mean") {
+        model.push_back(
+            new SingleVariantFamilyGrammarGamma(GrammarGamma::AF_MEAN));
+      } else {
+        logger->info(
+            "FamGrammarGamma cannot recoginized specified kinship calculation "
+            "method [ %s ], exit...",
+            afMethod.c_str());
+        exit(1);
+      }
     } else if (modelName == "firth") {
       model.push_back(new SingleVariantFirthTest);
     } else if (modelName == "mtscore") {
       model.push_back(new MultipleTraitScoreTest);
+    } else if (modelName == "fastmtscore") {
+      model.push_back(new FastMultipleTraitScoreTest);
+    } else if (modelName == "singledummy") {
+      // add a line to create your model
+      // and the model will be deleted automatically after analysis is done
+      model.push_back(new SingleDummy);
     } else {
       logger->error("Unknown model name: %s .", modelName.c_str());
-      abort();
+      exit(1);
     }
   } else if (modelType == "burden") {
     if (modelName == "cmc") {
@@ -112,7 +137,7 @@ int ModelManager::create(const std::string& modelType,
       model.push_back(new FamFp);
     } else {
       logger->error("Unknown model name: [ %s ].", modelName.c_str());
-      abort();
+      exit(1);
     }
   } else if (modelType == "vt") {
     if (modelName == "cmc") {
@@ -137,7 +162,7 @@ int ModelManager::create(const std::string& modelType,
       logger->error("Not yet implemented.");
     } else {
       logger->error("Unknown model name: %s .", modelName.c_str());
-      abort();
+      exit(1);
     }
   } else if (modelType == "kernel") {
     if (modelName == "skat") {
@@ -177,8 +202,8 @@ int ModelManager::create(const std::string& modelType,
           beta1, beta2);
     } else {
       logger->error("Unknown model name: %s .", modelName.c_str());
-      abort();
-    };
+      exit(1);
+    }
   } else if (modelType == "meta") {
     if (modelName == "score") {
       model.push_back(new MetaScoreTest());
@@ -205,6 +230,15 @@ int ModelManager::create(const std::string& modelType,
           "under additive model",
           toStringWithComma(windowSize).c_str());
       model.push_back(new MetaCovTest(windowSize));
+    } else if (modelName == "bolt") {
+      model.push_back(new MetaScoreBoltTest());
+    } else if (modelName == "boltcov") {
+      parser.assign("windowSize", &windowSize, 1000000);
+      logger->info(
+          "Meta analysis uses window size %s to produce covariance statistics "
+          "under additive model",
+          toStringWithComma(windowSize).c_str());
+      model.push_back(new MetaCovBoltTest(windowSize));
     }
 #if 0
     else if (modelName == "skew") {
@@ -221,14 +255,14 @@ int ModelManager::create(const std::string& modelType,
 #endif
     else {
       logger->error("Unknown model name: %s .", modelName.c_str());
-      abort();
+      exit(1);
     }
   } else if (modelType == "outputRaw") {
     if (modelName == "dump") {
       model.push_back(new DumpModel(prefix.c_str()));
     } else {
       logger->error("Unknown model name: %s .", modelName.c_str());
-      abort();
+      exit(1);
     }
   } else {
     logger->error("Unrecognized model type [ %s ]", modelType.c_str());
@@ -245,6 +279,7 @@ int ModelManager::create(const std::string& modelType,
       model[i]->setQuantitativeOutcome();
     }
   }
+
   // create output files
   for (size_t i = previousModelNumber; i < model.size(); ++i) {
     std::string s = this->prefix;

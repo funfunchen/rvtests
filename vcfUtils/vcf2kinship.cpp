@@ -1,7 +1,3 @@
-#include "Argument.h"
-#include "IO.h"
-#include "tabix.h"
-
 #include <algorithm>
 #include <cassert>
 #include <map>
@@ -11,7 +7,9 @@
 
 #include "third/eigen/Eigen/Core"
 #include "third/eigen/Eigen/Eigenvalues"
+#include "third/tabix/tabix.h"
 
+#include "base/Argument.h"
 #include "base/IO.h"
 #include "base/Indexer.h"
 #include "base/Kinship.h"
@@ -32,12 +30,12 @@
 
 class EmpiricalKinship {
  public:
+  virtual ~EmpiricalKinship() {}
   virtual int addGenotype(const std::vector<double>& g) = 0;
   virtual void calculate() = 0;
   virtual const SimpleMatrix& getKinship() const = 0;
   // number of sites used in this calculation
   virtual int getSiteNumber() const = 0;
-  virtual ~EmpiricalKinship() {}
 
  public:
   int setSex(std::vector<int>* sex) {
@@ -375,12 +373,73 @@ class BaldingNicolsKinshipForX : public EmpiricalKinship {
   int n;
 };  // Balding-Nicols matrix for sex chromosome
 
+// write a genotype/dosage matrix (sample by SNP)
+// output 3 files:
+//   prefix.data
+//   prefix.dim
+//   prefix.rowName
+class GenotypeWriter {
+ public:
+  explicit GenotypeWriter() : fGeno_(NULL), nVariant_(-1){};
+  int open(const std::vector<std::string>& sampleName,
+           const std::string& prefix) {
+    sampleName_ = (sampleName);
+    prefix_ = (prefix);
+
+    return init();
+  }
+  ~GenotypeWriter() { close(); }
+  int write(const std::vector<double>& g) {
+    assert(fGeno_);
+    ++nVariant_;
+    return fwrite(g.data(), sizeof(double), g.size(), fGeno_);
+  }
+  int init() {
+    // write prefix.rowName
+    std::string fileName = prefix_;
+    fileName += ".rowName";
+    FILE* fp = fopen(fileName.c_str(), "wt");
+    for (size_t i = 0; i != sampleName_.size(); ++i) {
+      fputs(sampleName_[i].c_str(), fp);
+      fputs("\n", fp);
+    }
+    fclose(fp);
+
+    fileName = prefix_;
+    fileName += ".data";
+    fGeno_ = fopen(fileName.c_str(), "wb");
+
+    return 0;
+  }
+  int close() {
+    // close prefix.data file
+    if (fGeno_) {
+      fclose(fGeno_);
+
+      // write prefix.dim
+      std::string fileName = prefix_;
+      fileName += ".dim";
+      FILE* fp = fopen(fileName.c_str(), "wt");
+      fprintf(fp, "%d\t%d\t<f8\n", (int)sampleName_.size(), nVariant_);
+      fclose(fp);
+    }
+
+    return 0;
+  }
+
+ private:
+  std::vector<std::string> sampleName_;
+  std::string prefix_;
+  FILE* fGeno_;
+  int nVariant_;
+};
+
 int output(const std::vector<std::string>& famName,
            const std::vector<std::string>& indvName, const SimpleMatrix& mat,
            bool performPCA, const std::string& outPrefix);
 
 #define PROGRAM "vcf2kinship"
-#define VERSION "20151110"
+#define VERSION "20170307"
 void welcome() {
 #ifdef NDEBUG
   fprintf(stdout, "Thank you for using %s (version %s, git tag %s)\n", PROGRAM,
@@ -396,96 +455,96 @@ void welcome() {
   fprintf(stdout, "\n");
 }
 
+////////////////////////////////////////////////
+BEGIN_PARAMETER_LIST()
+ADD_PARAMETER_GROUP("Input/Output")
+ADD_STRING_PARAMETER(inVcf, "--inVcf", "Input VCF File")
+
+ADD_STRING_PARAMETER(outPrefix, "--out",
+                     "Output prefix for autosomal kinship calculation")
+
+ADD_PARAMETER_GROUP("Chromsome X Analysis Options")
+ADD_BOOL_PARAMETER(
+    xHemi, "--xHemi",
+    "Calculate kinship using non-PAR region X chromosome markers.")
+ADD_STRING_PARAMETER(xLabel, "--xLabel",
+                     "Specify X chromosome label (default: 23,X")
+ADD_STRING_PARAMETER(xParRegion, "--xRegion",
+                     "Specify PAR region (default: hg19), can be build "
+                     "number e.g. hg38, b37; or specify region, e.g. "
+                     "'60001-2699520,154931044-155260560'")
+
+ADD_PARAMETER_GROUP("Algorithm")
+ADD_STRING_PARAMETER(
+    ped, "--ped",
+    "Use pedigree method or specify ped file for X chromosome analysis.")
+ADD_BOOL_PARAMETER(ibs, "--ibs", "Use IBS method.")
+ADD_BOOL_PARAMETER(bn, "--bn", "Use Balding-Nicols method.")
+ADD_BOOL_PARAMETER(pca, "--pca", "Decomoposite calculated kinship matrix.")
+ADD_BOOL_PARAMETER(storeGenotype, "--storeGenotype",
+                   "Store genotye matrix (sample by genotype).")
+
+ADD_PARAMETER_GROUP("Specify Genotype")
+ADD_STRING_PARAMETER(dosageTag, "--dosage",
+                     "Specify which dosage tag to use (e.g. EC/DS). Typical "
+                     "dosage are between 0.0 and 2.0.")
+
+ADD_PARAMETER_GROUP("People Filter")
+ADD_STRING_PARAMETER(peopleIncludeID, "--peopleIncludeID",
+                     "List IDs of people that will be included in study")
+ADD_STRING_PARAMETER(
+    peopleIncludeFile, "--peopleIncludeFile",
+    "From given file, set IDs of people that will be included in study")
+ADD_STRING_PARAMETER(peopleExcludeID, "--peopleExcludeID",
+                     "List IDs of people that will be included in study")
+ADD_STRING_PARAMETER(
+    peopleExcludeFile, "--peopleExcludeFile",
+    "From given file, set IDs of people that will be included in study")
+ADD_PARAMETER_GROUP("Range Filter")
+ADD_STRING_PARAMETER(
+    rangeList, "--rangeList",
+    "Specify some ranges to use, please use chr:begin-end format.")
+ADD_STRING_PARAMETER(
+    rangeFile, "--rangeFile",
+    "Specify the file containing ranges, please use chr:begin-end format.")
+ADD_PARAMETER_GROUP("Site Filter")
+ADD_DOUBLE_PARAMETER(minMAF, "--minMAF",
+                     "Specify the minimum MAF threshold to be included in "
+                     "calculating kinship.")
+ADD_DOUBLE_PARAMETER(maxMissing, "--maxMiss",
+                     "Specify the maximum allows missing rate to be inclued "
+                     "in calculating kinship.")
+ADD_DOUBLE_PARAMETER(minSiteQual, "--minSiteQual", "Specify minimum site qual")
+ADD_STRING_PARAMETER(
+    annoType, "--anno",
+    "Specify the annotation type to be included in calculating kinship.")
+ADD_PARAMETER_GROUP("Genotype Filter")
+ADD_DOUBLE_PARAMETER(minGQ, "--minGQ",
+                     "Specify the minimum genotype quality, otherwise marked "
+                     "as missing genotype")
+ADD_DOUBLE_PARAMETER(minGD, "--minGD",
+                     "Specify the minimum genotype depth, otherwise marked "
+                     "as missing genotype")
+
+ADD_PARAMETER_GROUP("Other Function")
+ADD_STRING_PARAMETER(updateId, "--update-id",
+                     "Update VCF sample id using given file (column 1 and 2 "
+                     "are old and new id).")
+ADD_DEFAULT_INT_PARAMETER(thread, 1, "--thread",
+                          "Specify number of parallel threads to speed up")
+ADD_BOOL_PARAMETER(help, "--help", "Print detailed help message")
+END_PARAMETER_LIST();
+
 Logger* logger = NULL;
 int main(int argc, char** argv) {
-  ////////////////////////////////////////////////
-  BEGIN_PARAMETER_LIST(pl)
-  ADD_PARAMETER_GROUP(pl, "Input/Output")
-  ADD_STRING_PARAMETER(pl, inVcf, "--inVcf", "Input VCF File")
-
-  ADD_STRING_PARAMETER(pl, outPrefix, "--out",
-                       "Output prefix for autosomal kinship calculation")
-
-  ADD_PARAMETER_GROUP(pl, "Chromsome X Analysis Options")
-  ADD_BOOL_PARAMETER(
-      pl, xHemi, "--xHemi",
-      "Calculate kinship using non-PAR region X chromosome markers.")
-  ADD_STRING_PARAMETER(pl, xLabel, "--xLabel",
-                       "Specify X chromosome label (default: 23,X")
-  ADD_STRING_PARAMETER(pl, xParRegion, "--xRegion",
-                       "Specify PAR region (default: hg19), can be build "
-                       "number e.g. hg38, b37; or specify region, e.g. "
-                       "'60001-2699520,154931044-155260560'")
-
-  ADD_PARAMETER_GROUP(pl, "Algorithm")
-  ADD_STRING_PARAMETER(
-      pl, ped, "--ped",
-      "Use pedigree method or specify ped file for X chromosome analysis.")
-  ADD_BOOL_PARAMETER(pl, ibs, "--ibs", "Use IBS method.")
-  ADD_BOOL_PARAMETER(pl, bn, "--bn", "Use Balding-Nicols method.")
-  ADD_BOOL_PARAMETER(pl, pca, "--pca",
-                     "Decomoposite calculated kinship matrix.")
-
-  ADD_PARAMETER_GROUP(pl, "Specify Genotype")
-  ADD_STRING_PARAMETER(pl, dosageTag, "--dosage",
-                       "Specify which dosage tag to use (e.g. EC/DS). Typical "
-                       "dosage are between 0.0 and 2.0.")
-
-  ADD_PARAMETER_GROUP(pl, "People Filter")
-  ADD_STRING_PARAMETER(pl, peopleIncludeID, "--peopleIncludeID",
-                       "List IDs of people that will be included in study")
-  ADD_STRING_PARAMETER(
-      pl, peopleIncludeFile, "--peopleIncludeFile",
-      "From given file, set IDs of people that will be included in study")
-  ADD_STRING_PARAMETER(pl, peopleExcludeID, "--peopleExcludeID",
-                       "List IDs of people that will be included in study")
-  ADD_STRING_PARAMETER(
-      pl, peopleExcludeFile, "--peopleExcludeFile",
-      "From given file, set IDs of people that will be included in study")
-  ADD_PARAMETER_GROUP(pl, "Range Filter")
-  ADD_STRING_PARAMETER(
-      pl, rangeList, "--rangeList",
-      "Specify some ranges to use, please use chr:begin-end format.")
-  ADD_STRING_PARAMETER(
-      pl, rangeFile, "--rangeFile",
-      "Specify the file containing ranges, please use chr:begin-end format.")
-  ADD_PARAMETER_GROUP(pl, "Site Filter")
-  ADD_DOUBLE_PARAMETER(pl, minMAF, "--minMAF",
-                       "Specify the minimum MAF threshold to be included in "
-                       "calculating kinship.")
-  ADD_DOUBLE_PARAMETER(pl, maxMissing, "--maxMiss",
-                       "Specify the maximum allows missing rate to be inclued "
-                       "in calculating kinship.")
-  ADD_DOUBLE_PARAMETER(pl, minSiteQual, "--minSiteQual",
-                       "Specify minimum site qual")
-  ADD_STRING_PARAMETER(
-      pl, annoType, "--anno",
-      "Specify the annotation type to be included in calculating kinship.")
-  ADD_PARAMETER_GROUP(pl, "Genotype Filter")
-  ADD_DOUBLE_PARAMETER(pl, minGQ, "--minGQ",
-                       "Specify the minimum genotype quality, otherwise marked "
-                       "as missing genotype")
-  ADD_DOUBLE_PARAMETER(pl, minGD, "--minGD",
-                       "Specify the minimum genotype depth, otherwise marked "
-                       "as missing genotype")
-
-  ADD_PARAMETER_GROUP(pl, "Other Function")
-  ADD_STRING_PARAMETER(pl, updateId, "--update-id",
-                       "Update VCF sample id using given file (column 1 and 2 "
-                       "are old and new id).")
-  ADD_DEFAULT_INT_PARAMETER(pl, thread, 1, "--thread",
-                            "Specify number of parallel threads to speed up")
-  ADD_BOOL_PARAMETER(pl, help, "--help", "Print detailed help message")
-  END_PARAMETER_LIST(pl);
-
-  pl.Read(argc, argv);
+  PARSE_PARAMETER(argc, argv);
   if (FLAG_help) {
-    pl.Help();
+    PARAMETER_HELP();
     return 0;
   }
 
   welcome();
-  pl.Status();
+  PARAMETER_STATUS();
 
   if (FLAG_REMAIN_ARG.size() > 0) {
     fprintf(stderr, "Unparsed arguments: ");
@@ -493,7 +552,7 @@ int main(int argc, char** argv) {
       fprintf(stderr, " %s", FLAG_REMAIN_ARG[i].c_str());
     }
     fprintf(stderr, "\n");
-    abort();
+    exit(1);
   }
 
   Logger _logger((FLAG_outPrefix + ".vcf2kinship.log").c_str());
@@ -502,7 +561,7 @@ int main(int argc, char** argv) {
   logger->infoToFile("Git Version");
   logger->infoToFile("%s", GIT_VERSION);
   logger->infoToFile("Parameters BEGIN");
-  pl.WriteToFile(logger->getHandle());
+  PARAMETER_INSTANCE().WriteToFile(logger->getHandle());
   logger->infoToFile("Parameters END");
   logger->sync();
 
@@ -514,7 +573,7 @@ int main(int argc, char** argv) {
   // Set threads
   if (FLAG_thread < 1) {
     logger->error("Invalid thread number: %d", FLAG_thread);
-    abort();
+    exit(1);
   } else if (FLAG_thread > 1) {
     logger->info("Multiple ( %d ) threads will be used.", FLAG_thread);
   }
@@ -526,7 +585,7 @@ int main(int argc, char** argv) {
   // --inVcf");
   if (FLAG_inVcf.empty() && FLAG_ped.empty()) {
     logger->error("Please provide input file using: --inVcf or --ped");
-    abort();
+    exit(1);
   }
   REQUIRE_STRING_PARAMETER(FLAG_outPrefix,
                            "Please provide output prefix using: --out");
@@ -549,18 +608,18 @@ int main(int argc, char** argv) {
         logger->error(
             "Failed to calculate kinship from X chromosome as PED file is "
             "missing! Please specify --ped input.ped and --xHemi together.");
-        abort();
+        exit(1);
       }
       if (FLAG_ibs) {
         logger->error(
             "Calculate kinship from X chromosome using IBS method is not "
             "supported!");
-        abort();
+        exit(1);
       }
     }
   } else {
     logger->error("Parameter errors!");
-    abort();
+    exit(1);
   }
 
   // load pedigree
@@ -674,7 +733,7 @@ int main(int argc, char** argv) {
 
       if (vcfName.size() == (size_t)nExclude) {
         logger->error("No samples left for analysis, aborting...");
-        abort();
+        exit(1);
       }
     }
   }
@@ -711,7 +770,7 @@ int main(int argc, char** argv) {
     logger->error(
         "More than one or none of the empirical kinsip calculation methods "
         "specified.");
-    abort();
+    exit(1);
   }
   EmpiricalKinship* kinship = NULL;
   EmpiricalKinship* kinshipForX = NULL;
@@ -737,6 +796,10 @@ int main(int argc, char** argv) {
   if (FLAG_xHemi) {
     kinshipForX->setSex(&sex);
   }
+  GenotypeWriter gw;
+  if (FLAG_storeGenotype) {
+    gw.open(names, FLAG_outPrefix);
+  }
 
   // set threshold
   double maxMissing = 1.0 * FLAG_maxMissing * names.size();
@@ -744,6 +807,7 @@ int main(int argc, char** argv) {
   int variantX = 0;
   int variantAutoUsed = 0;
   int variantXUsed = 0;
+  int multiAllelicSite = 0;
   int lowSiteFreq = 0;  // counter of low site qualities
   int filterSite = 0;   // counter of site with too many bad genotypes
   int numMaleHemiMissing = 0;
@@ -772,6 +836,10 @@ int main(int argc, char** argv) {
     int pos = r.getPos();
 
     // site filter
+    if (strchr(r.getAlt(), ',') != NULL) {
+      ++multiAllelicSite;
+      continue;
+    }
     if (FLAG_minSiteQual > 0 && r.getQualDouble() < FLAG_minSiteQual) {
       ++lowSiteFreq;
       continue;
@@ -780,10 +848,8 @@ int main(int argc, char** argv) {
       bool isMissing = false;
       const char* tag = r.getInfoTag("ANNO", &isMissing).toStr();
       if (isMissing) continue;
-      // fprintf(stdout, "ANNO = %s", tag);
+
       bool match = regex.match(tag);
-      // fprintf(stdout, " %s \t", match ? "match": "noMatch");
-      // fprintf(stdout, " %s \n", exists ? "exists": "missing");
       if (!match) {
         continue;
       }
@@ -817,7 +883,7 @@ int main(int argc, char** argv) {
           if (sex[i] == 1) {
             geno = indv->get(GTidx, &missing)
                        .getMaleNonParGenotype01();  // geno should be 0, 1 or
-                                                    // missing
+            // missing
             // if geno is missing but it is a valid genotype (0, 1, 2..), then
             // it's wrong coding
             if (geno < 0 && indv->get(GTidx, &missing).getGenotype() >= 0) {
@@ -905,6 +971,10 @@ int main(int argc, char** argv) {
       kinshipForX->addGenotype(genotype);
       ++variantX;
     }
+
+    if (FLAG_storeGenotype) {
+      gw.write(genotype);
+    }
   }
   logger->info("Total [ %d ] VCF records have been processed.", lineNo);
 
@@ -943,6 +1013,9 @@ int main(int argc, char** argv) {
   // }
   if (nonVariantSite) {
     logger->info("Skipped [ %d ] non-variant VCF records", nonVariantSite);
+  }
+  if (multiAllelicSite) {
+    logger->info("Skipped [ %d ] multi-allelic sites", multiAllelicSite);
   }
   if (lowSiteFreq) {
     logger->info("Skipped [ %d ] low sites due to site quality lower than %f",

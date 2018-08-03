@@ -1,7 +1,7 @@
 #include "SkatO.h"
 
-#include <Eigen/Core>
 #include <Eigen/Cholesky>
+#include <Eigen/Core>
 #include <Eigen/Eigenvalues>
 #include <vector>
 
@@ -17,6 +17,7 @@
 #undef DEBUG
 #ifdef DEBUG
 #include <fstream>
+#include "MatrixOperation.h"
 template <class T>
 void dumpEigen(const char* fn, T& m) {
   std::ofstream k(fn);
@@ -84,11 +85,14 @@ class SkatO::SkatOImpl {
     } else {
       W = G.transpose() * v.asDiagonal() * G -
           (G.transpose() * v.asDiagonal() * X) *
-              (X.transpose() * v.asDiagonal() * X).ldlt().solve(
-                  X.transpose() * v.asDiagonal() * G);
+              (X.transpose() * v.asDiagonal() * X)
+                  .ldlt()
+                  .solve(X.transpose() * v.asDiagonal() * G);
     }
     W = W / 2;  // follow SKAT R package convension to divide 2 here.
-    getEigen(W, &lambda);
+    if (getEigen(W, &lambda)) {  // error can occur when lambda are all zeros
+      return -1;
+    }
     this->pValue = getPvalDavies(Q, lambda);
     return 0;
   }
@@ -148,8 +152,9 @@ class SkatO::SkatOImpl {
       Eigen::VectorXd v_sqrt = v.cwiseSqrt();
       Z1 = v_sqrt.asDiagonal() * G -
            v_sqrt.asDiagonal() * X *
-               (X.transpose() * v.asDiagonal() * X).ldlt().solve(
-                   X.transpose() * v.asDiagonal() * G);
+               (X.transpose() * v.asDiagonal() * X)
+                   .ldlt()
+                   .solve(X.transpose() * v.asDiagonal() * G);
     }
     Z1 = Z1 / sqrt(2);  // follow SKAT R package convention (divides sqrt{2})
 
@@ -160,7 +165,12 @@ class SkatO::SkatOImpl {
       chol.compute(R_rhos[i]);  // R_rhos[i] = L * L^T
       Eigen::MatrixXd Z2 = Z1 * chol.matrixL();
       Eigen::MatrixXd K = Z2.transpose() * Z2;
-      getEigen(K, &lambdas[i]);
+      if (getEigen(K, &lambdas[i])) {
+        // error occured,
+        // e.g. G is in the column space of Z => Z1 = 0 => K is all zeros
+        //      this can happen when many covariates are used
+        return -1;
+      }
     }
 
     // calculate some parameters (for Z(I-M)Z part)
@@ -169,15 +179,18 @@ class SkatO::SkatOImpl {
     Eigen::MatrixXd ZMZ = z_bar.transpose() * Z1;
     ZMZ = (ZMZ.transpose() * ZMZ) / z_norm;
     Eigen::MatrixXd ZIMZ = Z1.transpose() * Z1 - ZMZ;  // Z(I-M)Z' = ZZ' - ZMZ'
-    getEigen(ZIMZ, &this->lambda);
+    if (getEigen(ZIMZ, &this->lambda)) {
+      return -1;
+    }
     this->VarZeta = 4.0 * (ZMZ.array() * ZIMZ.array()).sum();
     this->MuQ = lambda.sum();
     this->VarQ = 2.0 * (lambda.array() * lambda.array()).sum() + VarZeta;
 
     double temp = (lambda.array() * lambda.array()).sum();
-    double KerQ = (lambda.array() * lambda.array() * lambda.array() *
-                   lambda.array()).sum() /
-                  temp / temp * 12;
+    double KerQ =
+        (lambda.array() * lambda.array() * lambda.array() * lambda.array())
+            .sum() /
+        temp / temp * 12;
     this->Df = 12 / KerQ;
 
     // calculate tau
@@ -287,7 +300,7 @@ class SkatO::SkatOImpl {
   }
 
   double computeIntegrandDavies(double x) {
-    double kappa;
+    double kappa = DBL_MAX;
     for (int i = 0; i < nRho; ++i) {
       double v = (Qs_minP[i] - taus[i] * x) / (1.0 - rhos[i]);
       if (i == 0) {

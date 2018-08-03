@@ -6,10 +6,12 @@
 #include "libsrc/MathMatrix.h"
 #include "libsrc/Random.h"
 
-#include "Formula.h"
-#include "GenotypeCounter.h"
-#include "KinshipHolder.h"
-#include "Result.h"
+#include "base/KinshipHolder.h"
+#include "regression/Formula.h"
+#include "src/GenotypeCounter.h"
+#include "src/Result.h"
+
+class SimpleMatrix;
 
 extern Logger* logger;
 
@@ -478,6 +480,31 @@ class DataConsolidator {
     return this->hasKinshipForAuto() || this->hasKinshipForX();
   }
 
+ public:
+  /**
+   * Create data files for BOLT-LMM heritability estimation, inlcudes
+   *  - a set of binary PLINK file (genotype, phentoype)
+   *  - an optional .covar file that stores covariates
+   * the outputted sample has to follow the given order in @param sampleName
+   */
+  int prepareBoltModel(const std::string& prefix,
+                       const std::vector<std::string>& sampleName,
+                       const SimpleMatrix& phenotype);
+  const std::string& getBoltGenotypeFilePrefix() const {
+    return this->boltPrefix;
+  }
+#if 0
+  /**
+   * Load sample by genotype matrix
+   */
+  int loadGenotype(const std::string& prefix);
+  /**
+   * Load sample by genotype matrix, fill missing to mean, and equalize variance
+   */
+  int loadNormalizedGenotype(const std::string& prefix);
+  EigenMatrix* getFullGenotype();
+#endif
+
  private:
   // don't copy
   DataConsolidator(const DataConsolidator&);
@@ -498,6 +525,7 @@ class DataConsolidator {
   std::vector<std::string> originalRowLabel;
   std::vector<std::string> rowLabel;
   KinshipHolder kinship[2];  // 2: include both AUTO and X kinships
+  std::string boltPrefix;    // prefix for a set of file for BoltLMM model
 
   // sex chromosome adjustment
   const std::vector<int>* sex;

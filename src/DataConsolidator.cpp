@@ -3,10 +3,16 @@
 #include <string>
 #include <vector>
 
+#include "base/Argument.h"
 #include "base/CommonFunction.h"
+#include "base/SimpleMatrix.h"
+#include "libVcf/PlinkInputFile.h"
+#include "libVcf/PlinkOutputFile.h"
+#include "regression/EigenMatrix.h"
 #include "regression/EigenMatrixInterface.h"
+#include "src/LinearAlgebra.h"
 
-#include "LinearAlgebra.h"
+DECLARE_BOOL_PARAMETER(boltPlinkNoCheck);
 
 void convertToMinorAlleleCount(Matrix& in, Matrix* g) {
   Matrix& m = *g;
@@ -110,6 +116,8 @@ DataConsolidator::DataConsolidator()
       phenotypeUpdated(true),
       covariateUpdated(true),
       sex(NULL),
+      formula(NULL),
+      counter(NULL),
       parRegion(NULL) {}
 
 DataConsolidator::~DataConsolidator() {}
@@ -148,7 +156,7 @@ void DataConsolidator::imputeGenotypeByFrequency(Matrix* genotype, Random* r) {
       }
     }
   }
-};
+}
 
 /**
  * Impute missing genotype (<0) according to its mean genotype
@@ -182,7 +190,7 @@ void DataConsolidator::imputeGenotypeToMean(Matrix* genotype) {
     }
     // fprintf(stderr, "impute to mean = %g, ac = %d, an = %d\n", g, ac, an);
   }
-};
+}
 
 int DataConsolidator::preRegressionCheck(Matrix& pheno, Matrix& cov) {
   if (this->checkColinearity(cov)) {
@@ -198,11 +206,18 @@ int DataConsolidator::preRegressionCheck(Matrix& pheno, Matrix& cov) {
 }
 
 int DataConsolidator::checkColinearity(Matrix& cov) {
-  int r = matrixRank(cov);
-  int m = (cov.rows > cov.cols) ? cov.cols : cov.rows;
-  // fprintf(stderr, "rank of cov is %d, and min(r,c) = %d\n", r, m);
+  // no covariate => no colienarity problem
+  if (cov.cols == 0) {
+    return 0;
+  }
+
+  const int r = matrixRank(cov);
+  const int m = (cov.rows > cov.cols) ? cov.cols : cov.rows;
   if (m != r) {
-    logger->warn("The covariate matrix may be rank deficient (%d < %d)!", r, m);
+    logger->warn(
+        "The covariate matrix may be rank deficient (rank = [ %d ], dim = [ "
+        "%d, %d ])!",
+        r, cov.rows, cov.cols);
     return -1;
   }
   return 0;
@@ -305,3 +320,234 @@ int DataConsolidator::setKinshipEigenFile(int kinshipType,
 int DataConsolidator::loadKinship(int kinshipType) {
   return this->kinship[kinshipType].load();
 }
+
+int DataConsolidator::prepareBoltModel(
+    const std::string& prefix, const std::vector<std::string>& sampleName,
+    const SimpleMatrix& phenotype) {
+  PlinkInputFile pin(prefix);
+  if (!isUnique(sampleName)) {
+    logger->error("%s:%d Unexpected duplicated samples!", __FILE__, __LINE__);
+    exit(1);
+  }
+  for (size_t i = 0; i != sampleName.size(); ++i) {
+    if (pin.getSampleIdx(sampleName[i]) < 0) {
+      logger->warn(
+          "%s:%d PLINK file [ %s ] does not include sample [ %s "
+          "]!",
+          __FILE__, __LINE__, (prefix + ".fam").c_str(), sampleName[i].c_str());
+    }
+  }
+
+  const int M = pin.getNumMarker();
+  const int N = pin.getNumIndv();
+  bool needNewPlink = false;
+  std::vector<int> sampleIdx;  // keep these samples
+  std::vector<int> snpIdx;     // keep these SNPs
+  if (FLAG_boltPlinkNoCheck) {
+    // do nothing
+    logger->info(
+        "Assume binary PLINK file is ready for use (MAF, missingness)");
+  } else {
+    // calculate MAF
+    std::vector<double> maf(M);
+    pin.calculateMAF(&maf);
+
+    // calculate missing rate
+    std::vector<double> imiss(N);  // individual
+    std::vector<double> lmiss(M);  // marker
+    pin.calculateMissing(&imiss, &lmiss);
+    // check missingness for samples
+    std::set<int> badSampleIdx;
+    for (int i = 0; i != N; ++i) {
+      if (imiss[i] > 0.05) {
+        logger->warn("Sample [ %s ] has high rate of missing genotype [ %g ]!",
+                     pin.getIID()[i].c_str(), imiss[i]);
+        badSampleIdx.insert(i);
+        needNewPlink = true;
+      }
+    }
+    if (badSampleIdx.size()) {
+      logger->warn(
+          "[ %d ] sample(s) have high missing rate, need to create new binary "
+          "PLINK files",
+          (int)badSampleIdx.size());
+    }
+
+    // choose SNPs to keep
+    for (size_t i = 0; i != maf.size(); ++i) {
+      if (maf[i] < 0.05 || lmiss[i] > 0.05) {
+        needNewPlink = true;
+        continue;
+      } else {
+        snpIdx.push_back(i);
+      }
+    }
+    if ((int)snpIdx.size() != M) {
+      logger->warn(
+          "[ %d ] markers have high missing rate or low MAF, need to create "
+          "new "
+          "binary PLINK files",
+          M - (int)snpIdx.size());
+    }
+
+    // build a sample index, such that plink.fam[index] is in the same order as
+    // @param sampleName
+    for (size_t i = 0; i != sampleName.size(); ++i) {
+      if (badSampleIdx.count(i)) {
+        continue;
+      }
+      sampleIdx.push_back(pin.getSampleIdx(sampleName[i]));
+    }
+    // check order
+    for (size_t i = 0; i != sampleName.size(); ++i) {
+      if (pin.getSampleIdx(sampleName[i]) != (int)i) {
+        needNewPlink = true;
+        logger->warn(
+            "To adjust phenotype order, need to create new binary PLINK files");
+        break;
+      }
+    }
+    if ((int)sampleName.size() != N) {
+      logger->warn(
+          "Existing binary PLINK file has more samples [ %d ], need to create "
+          "new binary PLINK files",
+          N - (int)sampleName.size());
+      needNewPlink = true;
+    }
+  }  // end    if (FLAG_boltPlinkNoCheck) {
+  if (needNewPlink) {
+    // write a new set of PLINK file
+    this->boltPrefix = prefix + ".out";
+    logger->info("Need to create new binary PLINK files with prefix [ %s ].",
+                 this->boltPrefix.c_str());
+    PlinkOutputFile pout(prefix + ".out");
+    pout.extractFAMWithPhenotype(pin, sampleIdx, phenotype);
+    pout.extractBIM(pin, snpIdx);
+    pout.extractBED(pin, sampleIdx, snpIdx);
+  } else {
+    this->boltPrefix = prefix;
+    logger->info("Use binary PLINK file [ %s ] in BoltLMM model",
+                 this->boltPrefix.c_str());
+  }
+
+  // write covariate file if there are covariates
+  if (covariate.cols > 0) {
+    std::string covarFn = this->boltPrefix + ".covar";
+    logger->info("Create covariate file [ %s ]", covarFn.c_str());
+    FILE* fpCov = fopen((covarFn).c_str(), "wt");
+    fprintf(fpCov, "FID\tIID");
+    for (int j = 0; j < covariate.cols; ++j) {
+      fprintf(fpCov, "\t%s", (char*)covariate.GetColumnLabel(j));
+    }
+    fprintf(fpCov, "\n");
+    for (int i = 0; i < covariate.rows; ++i) {
+      fprintf(fpCov, "%s\t%s", sampleName[i].c_str(), sampleName[i].c_str());
+      for (int j = 0; j < covariate.cols; ++j) {
+        fprintf(fpCov, "\t%g", covariate[i][j]);
+      }
+      fputs("\n", fpCov);
+    }
+    fclose(fpCov);
+  }
+
+  return 0;
+}
+
+#if 0
+int DataConsolidator::loadGenotype(const std::string& prefix) {
+  std::string fn = prefix;
+  fn += ".dim";
+
+  int nrow = 0;
+  int ncol = 0;
+  FILE* fp = fopen(fn.c_str(), "rt");
+  fscanf(fp, "%d", &nrow);
+  fscanf(fp, "%d", &ncol);
+  fclose(fp);
+
+  fullGenotype_ = new EigenMatrix;
+  Eigen::MatrixXf& geno = fullGenotype_->mat;
+  geno.resize(nrow, ncol);
+
+  fn = prefix;
+  fn += ".data";
+  fp = fopen(fn.c_str(), "rb");
+  double* buff = new double[nrow];
+
+  for (int i = 0; i < ncol; i++) {
+    // process column by column
+    fread(buff, sizeof(double), nrow, fp);
+    for (int j = 0; j < nrow; ++j) {
+      geno(j, i) = buff[j];
+    }
+  }
+  delete[] buff;
+  fclose(fp);
+
+  return 0;
+}
+
+int DataConsolidator::loadNormalizedGenotype(const std::string& prefix) {
+  std::string fn = prefix;
+  fn += ".dim";
+
+  int nrow = 0;
+  int ncol = 0;
+  FILE* fp = fopen(fn.c_str(), "rt");
+  fscanf(fp, "%d", &nrow);
+  fscanf(fp, "%d", &ncol);
+  fclose(fp);
+
+  fullGenotype_ = new EigenMatrix;
+  Eigen::MatrixXf& geno = fullGenotype_->mat;
+  geno.resize(nrow, ncol);
+
+  fn = prefix;
+  fn += ".data";
+  fp = fopen(fn.c_str(), "rb");
+  double* buff = new double[nrow];
+  double sum = 0;
+  double sum2 = 0;
+  int nonMiss = 0;
+
+  double avg, sdInv;
+  for (int i = 0; i < ncol; i++) {
+    // process column by column
+    fread(buff, sizeof(double), nrow, fp);
+    sum = 0;
+    sum2 = 0;
+    nonMiss = 0;
+    for (int j = 0; j < nrow; ++j) {
+      if (buff[j] < 0) {
+        continue;
+      }
+      geno(j, i) = buff[j];
+      sum += buff[j];
+      sum2 += buff[j] * buff[j];
+      nonMiss++;
+    }
+
+    if (nonMiss == 0) {
+      avg = 0.0;
+      sdInv = 1.0;
+    } else {
+      avg = sum / nonMiss;
+      sdInv = 1.0 / sqrt(sum2 / nonMiss - avg * avg);
+    }
+
+    for (int j = 0; j < nrow; ++j) {
+      if (buff[j] < 0) {
+        geno(j, i) = 0.;
+      } else {
+        geno(j, i) = (geno(j, i) - avg) * sdInv;
+      }
+    }
+  }
+  delete[] buff;
+  fclose(fp);
+
+  return 0;
+}
+
+EigenMatrix* DataConsolidator::getFullGenotype() { return fullGenotype_; }
+#endif

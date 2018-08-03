@@ -4,6 +4,9 @@
 #include <set>
 #include <string>
 #include <vector>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 #include "base/Argument.h"
 #include "base/CommonFunction.h"
@@ -18,16 +21,19 @@
 #include "libsrc/MathMatrix.h"
 #include "libsrc/MathVector.h"
 
-#include "DataConsolidator.h"
-#include "DataLoader.h"
-#include "GenotypeExtractor.h"
-#include "ModelFitter.h"
-#include "ModelManager.h"
-#include "Result.h"
+#include "src/BGenGenotypeExtractor.h"
+#include "src/DataConsolidator.h"
+#include "src/DataLoader.h"
+#include "src/GenotypeExtractor.h"
+#include "src/KGGGenotypeExtractor.h"
+#include "src/ModelFitter.h"
+#include "src/ModelManager.h"
+#include "src/Result.h"
+#include "src/VCFGenotypeExtractor.h"
 
 Logger* logger = NULL;
 
-const char* VERSION = "20160630";
+const char* VERSION = "20171009";
 
 void banner(FILE* fp) {
   const char* string =
@@ -38,10 +44,19 @@ void banner(FILE* fp) {
       "|      Bingshan Li, Dajiang Liu          | \n"
       "|      Goncalo Abecasis                  | \n"
       "|      zhanxw@umich.edu                  | \n"
-      "|      April 2016                        | \n"
+      "|      October 2017                      | \n"
       "|      zhanxw.github.io/rvtests          | \n"
       "|----------------------------------------+ \n"
       "                                           \n";
+  fputs(string, fp);
+}
+
+void citation(FILE* fp) {
+  const char* string =
+      "  Please consider citing: Zhan, X., Hu, Y., Li, B., Abecasis, G. R., & "
+      "Liu, D. J. (2016). RVTESTS: an efficient and comprehensive tool for "
+      "rare variant association analysis using sequence data. Bioinformatics, "
+      "32(9), 1423-1426.\n";
   fputs(string, fp);
 }
 
@@ -217,188 +232,208 @@ void welcome() {
           VERSION, GIT_VERSION);
 #endif
   fprintf(stdout,
-          "  For documentation, refer to http://zhanxw.github.io/rvtests/\n");
+          "  For documentations, refer to http://zhanxw.github.io/rvtests/\n");
   fprintf(stdout,
           "  For questions and comments, send to Xiaowei Zhan "
           "<zhanxw@umich.edu>\n");
+  fprintf(stdout,
+          "  For bugs and feature requests, please submit at: "
+          "https://github.com/zhanxw/rvtests/issues\n");
   fprintf(stdout, "\n");
 }
 
+//////////////////////////////////////////////////
+// Parameter list
+//////////////////////////////////////////////////
+BEGIN_PARAMETER_LIST();
+ADD_PARAMETER_GROUP("Basic Input/Output");
+ADD_STRING_PARAMETER(inVcf, "--inVcf", "Input VCF File");
+ADD_STRING_PARAMETER(inBgen, "--inBgen", "Input BGEN File");
+ADD_STRING_PARAMETER(inBgenSample, "--inBgenSample",
+                     "Input Sample IDs for the BGEN File");
+ADD_STRING_PARAMETER(inKgg, "--inKgg", "Input KGG File");
+ADD_STRING_PARAMETER(outPrefix, "--out", "Output prefix");
+ADD_BOOL_PARAMETER(outputRaw, "--outputRaw",
+                   "Output genotypes, phenotype, covariates(if any); and "
+                   "collapsed genotype to tabular files");
+
+ADD_PARAMETER_GROUP("Specify Covariate");
+ADD_STRING_PARAMETER(cov, "--covar", "Specify covariate file");
+ADD_STRING_PARAMETER(
+    covName, "--covar-name",
+    "Specify the column name in covariate file to be included in analysis");
+ADD_BOOL_PARAMETER(sex, "--sex",
+                   "Include sex (5th column in the PED file); as a covariate");
+
+ADD_PARAMETER_GROUP("Specify Phenotype");
+ADD_STRING_PARAMETER(pheno, "--pheno", "Specify phenotype file");
+ADD_BOOL_PARAMETER(inverseNormal, "--inverseNormal",
+                   "Transform phenotype like normal distribution");
+ADD_BOOL_PARAMETER(
+    useResidualAsPhenotype, "--useResidualAsPhenotype",
+    "Fit covariate ~ phenotype, use residual to replace phenotype");
+ADD_STRING_PARAMETER(mpheno, "--mpheno",
+                     "Specify which phenotype column to read (default: 1);");
+ADD_STRING_PARAMETER(phenoName, "--pheno-name",
+                     "Specify which phenotype column to read by header");
+ADD_BOOL_PARAMETER(qtl, "--qtl", "Treat phenotype as quantitative trait");
+ADD_STRING_PARAMETER(
+    multiplePheno, "--multiplePheno",
+    "Specify aa template file for analyses of more than one phenotype");
+
+ADD_PARAMETER_GROUP("Specify Genotype");
+ADD_STRING_PARAMETER(dosageTag, "--dosage",
+                     "Specify which dosage tag to use. (e.g. EC or DS);");
+ADD_BOOL_PARAMETER(multiAllele, "--multipleAllele",
+                   "Support multi-allelic genotypes");
+
+ADD_PARAMETER_GROUP("Chromosome X Options");
+ADD_STRING_PARAMETER(xLabel, "--xLabel",
+                     "Specify X chromosome label (default: 23|X);");
+ADD_STRING_PARAMETER(xParRegion, "--xParRegion",
+                     "Specify PAR region (default: hg19);, can be build "
+                     "number e.g. hg38, b37; or specify region, e.g. "
+                     "'60001-2699520,154931044-155260560'");
+
+ADD_PARAMETER_GROUP("People Filter");
+ADD_STRING_PARAMETER(peopleIncludeID, "--peopleIncludeID",
+                     "List IDs of people that will be included in study");
+ADD_STRING_PARAMETER(
+    peopleIncludeFile, "--peopleIncludeFile",
+    "From given file, set IDs of people that will be included in study");
+ADD_STRING_PARAMETER(peopleExcludeID, "--peopleExcludeID",
+                     "List IDs of people that will be included in study");
+ADD_STRING_PARAMETER(
+    peopleExcludeFile, "--peopleExcludeFile",
+    "From given file, set IDs of people that will be included in study");
+
+ADD_PARAMETER_GROUP("Site Filter");
+ADD_STRING_PARAMETER(
+    rangeList, "--rangeList",
+    "Specify some ranges to use, please use chr:begin-end format.");
+ADD_STRING_PARAMETER(
+    rangeFile, "--rangeFile",
+    "Specify the file containing ranges, please use chr:begin-end format.");
+ADD_STRING_PARAMETER(siteFile, "--siteFile",
+                     "Specify the file containing sites to include, please "
+                     "use \"chr pos\" format.");
+ADD_INT_PARAMETER(
+    siteDepthMin, "--siteDepthMin",
+    "Specify minimum depth(inclusive); to be included in analysis");
+ADD_INT_PARAMETER(
+    siteDepthMax, "--siteDepthMax",
+    "Specify maximum depth(inclusive); to be included in analysis");
+ADD_INT_PARAMETER(siteMACMin, "--siteMACMin",
+                  "Specify minimum Minor Allele Count(inclusive); to be "
+                  "included in analysis");
+ADD_STRING_PARAMETER(annoType, "--annoType",
+                     "Specify annotation type that is followed by ANNO= in "
+                     "the VCF INFO field, regular expression is allowed ");
+
+ADD_PARAMETER_GROUP("Genotype Filter");
+ADD_INT_PARAMETER(
+    indvDepthMin, "--indvDepthMin",
+    "Specify minimum depth(inclusive); of a sample to be included in analysis");
+ADD_INT_PARAMETER(
+    indvDepthMax, "--indvDepthMax",
+    "Specify maximum depth(inclusive); of a sample to be included in analysis");
+ADD_INT_PARAMETER(
+    indvQualMin, "--indvQualMin",
+    "Specify minimum depth(inclusive); of a sample to be included in analysis");
+
+ADD_PARAMETER_GROUP("Association Model");
+ADD_STRING_PARAMETER(modelSingle, "--single",
+                     "Single variant tests, choose from: score, wald, exact, "
+                     "famScore, famLrt, famGrammarGamma, firth");
+ADD_STRING_PARAMETER(modelBurden, "--burden",
+                     "Burden tests, choose from: cmc, zeggini, mb, exactCMC, "
+                     "rarecover, cmat, cmcWald");
+ADD_STRING_PARAMETER(modelVT, "--vt",
+                     "Variable threshold tests, choose from: price, analytic");
+ADD_STRING_PARAMETER(
+    modelKernel, "--kernel",
+    "Kernal-based tests, choose from: SKAT, KBAC, FamSKAT, SKATO");
+ADD_STRING_PARAMETER(modelMeta, "--meta",
+                     "Meta-analysis related functions to generate summary "
+                     "statistics, choose from: score, cov, dominant, "
+                     "recessive");
+
+ADD_PARAMETER_GROUP("Family-based Models");
+ADD_STRING_PARAMETER(kinship, "--kinship",
+                     "Specify a kinship file for autosomal analysis, use "
+                     "vcf2kinship to generate");
+ADD_STRING_PARAMETER(xHemiKinship, "--xHemiKinship",
+                     "Provide kinship for the chromosome X hemizygote region");
+ADD_STRING_PARAMETER(kinshipEigen, "--kinshipEigen",
+                     "Specify eigen decomposition results of a kinship file "
+                     "for autosomal analysis");
+ADD_STRING_PARAMETER(
+    xHemiKinshipEigen, "--xHemiKinshipEigen",
+    "Specify eigen decomposition results of a kinship file for X analysis");
+ADD_STRING_PARAMETER(boltPlink, "--boltPlink",
+                     "Specify a prefix of binary PLINK inputs for BoltLMM")
+ADD_BOOL_PARAMETER(boltPlinkNoCheck, "--boltPlinkNoCheck",
+                   "Not checking MAF and missingness for binary PLINK file")
+
+ADD_PARAMETER_GROUP("Grouping Unit ");
+ADD_STRING_PARAMETER(geneFile, "--geneFile",
+                     "Specify a gene file (for burden tests);");
+ADD_STRING_PARAMETER(gene, "--gene", "Specify which genes to test");
+ADD_STRING_PARAMETER(setList, "--setList",
+                     "Specify a list to test (for burden tests);");
+ADD_STRING_PARAMETER(setFile, "--setFile",
+                     "Specify a list file (for burden tests, first 2 "
+                     "columns: setName chr:beg-end);");
+ADD_STRING_PARAMETER(set, "--set", "Specify which set to test (1st column);");
+
+ADD_PARAMETER_GROUP("Frequency Cutoff");
+/*ADD_BOOL_PARAMETER(freqFromFile, "--freqFromFile", "Obtain frequency
+ * from external file");*/
+// ADD_BOOL_PARAMETER(freqFromControl, "--freqFromControl", "Calculate
+// frequency from case samples");
+ADD_DOUBLE_PARAMETER(
+    freqUpper, "--freqUpper",
+    "Specify upper minor allele frequency bound to be included in analysis");
+ADD_DOUBLE_PARAMETER(
+    freqLower, "--freqLower",
+    "Specify lower minor allele frequency bound to be included in analysis");
+
+ADD_PARAMETER_GROUP("Missing Data");
+ADD_STRING_PARAMETER(
+    impute, "--impute",
+    "Impute missing genotype (default:mean):  mean, hwe, and drop");
+ADD_BOOL_PARAMETER(
+    imputePheno, "--imputePheno",
+    "Impute phenotype to mean of those have genotypes but no phenotypes");
+ADD_BOOL_PARAMETER(imputeCov, "--imputeCov",
+                   "Impute each covariate to its mean, instead of drop "
+                   "samples with missing covariates");
+
+ADD_PARAMETER_GROUP("Conditional Analysis");
+ADD_STRING_PARAMETER(condition, "--condition",
+                     "Specify markers to be conditions (specify range);");
+
+ADD_PARAMETER_GROUP("Auxiliary Functions");
+ADD_BOOL_PARAMETER(noweb, "--noweb", "Skip checking new version");
+ADD_BOOL_PARAMETER(hideCovar, "--hide-covar",
+                   "Surpress output lines of covariates");
+ADD_DEFAULT_INT_PARAMETER(numThread, 1, "--numThread",
+                          "Specify number of threads (default:1)");
+ADD_BOOL_PARAMETER(outputID, "--outputID",
+                   "Output VCF IDs in single-variant assocition results");
+ADD_BOOL_PARAMETER(help, "--help", "Print detailed help message");
+END_PARAMETER_LIST();
+
 int main(int argc, char** argv) {
-  ////////////////////////////////////////////////
-  BEGIN_PARAMETER_LIST(pl)
-  ADD_PARAMETER_GROUP(pl, "Basic Input/Output")
-  ADD_STRING_PARAMETER(pl, inVcf, "--inVcf", "Input VCF File")
-  ADD_STRING_PARAMETER(pl, outPrefix, "--out", "Output prefix")
-  ADD_BOOL_PARAMETER(pl, outputRaw, "--outputRaw",
-                     "Output genotypes, phenotype, covariates(if any) and "
-                     "collapsed genotype to tabular files")
-
-  ADD_PARAMETER_GROUP(pl, "Specify Covariate")
-  ADD_STRING_PARAMETER(pl, cov, "--covar", "Specify covariate file")
-  ADD_STRING_PARAMETER(
-      pl, covName, "--covar-name",
-      "Specify the column name in covariate file to be included in analysis")
-  ADD_BOOL_PARAMETER(pl, sex, "--sex",
-                     "Include sex (5th column in the PED file) as a covariate")
-
-  ADD_PARAMETER_GROUP(pl, "Specify Phenotype")
-  ADD_STRING_PARAMETER(pl, pheno, "--pheno", "Specify phenotype file")
-  ADD_BOOL_PARAMETER(pl, inverseNormal, "--inverseNormal",
-                     "Transform phenotype like normal distribution")
-  ADD_BOOL_PARAMETER(
-      pl, useResidualAsPhenotype, "--useResidualAsPhenotype",
-      "Fit covariate ~ phenotype, use residual to replace phenotype")
-  ADD_STRING_PARAMETER(pl, mpheno, "--mpheno",
-                       "Specify which phenotype column to read (default: 1)")
-  ADD_STRING_PARAMETER(pl, phenoName, "--pheno-name",
-                       "Specify which phenotype column to read by header")
-  ADD_BOOL_PARAMETER(pl, qtl, "--qtl", "Treat phenotype as quantitative trait")
-  ADD_STRING_PARAMETER(
-      pl, multiplePheno, "--multiplePheno",
-      "Specify aa template file for analyses of more than one phenotype")
-
-  ADD_PARAMETER_GROUP(pl, "Specify Genotype")
-  ADD_STRING_PARAMETER(pl, dosageTag, "--dosage",
-                       "Specify which dosage tag to use. (e.g. EC or DS)")
-
-  ADD_PARAMETER_GROUP(pl, "Chromosome X Options")
-  ADD_STRING_PARAMETER(pl, xLabel, "--xLabel",
-                       "Specify X chromosome label (default: 23|X)")
-  ADD_STRING_PARAMETER(pl, xParRegion, "--xParRegion",
-                       "Specify PAR region (default: hg19), can be build "
-                       "number e.g. hg38, b37; or specify region, e.g. "
-                       "'60001-2699520,154931044-155260560'")
-
-  ADD_PARAMETER_GROUP(pl, "People Filter")
-  ADD_STRING_PARAMETER(pl, peopleIncludeID, "--peopleIncludeID",
-                       "List IDs of people that will be included in study")
-  ADD_STRING_PARAMETER(
-      pl, peopleIncludeFile, "--peopleIncludeFile",
-      "From given file, set IDs of people that will be included in study")
-  ADD_STRING_PARAMETER(pl, peopleExcludeID, "--peopleExcludeID",
-                       "List IDs of people that will be included in study")
-  ADD_STRING_PARAMETER(
-      pl, peopleExcludeFile, "--peopleExcludeFile",
-      "From given file, set IDs of people that will be included in study")
-
-  ADD_PARAMETER_GROUP(pl, "Site Filter")
-  ADD_STRING_PARAMETER(
-      pl, rangeList, "--rangeList",
-      "Specify some ranges to use, please use chr:begin-end format.")
-  ADD_STRING_PARAMETER(
-      pl, rangeFile, "--rangeFile",
-      "Specify the file containing ranges, please use chr:begin-end format.")
-  ADD_STRING_PARAMETER(pl, siteFile, "--siteFile",
-                       "Specify the file containing sites to include, please "
-                       "use \"chr pos\" format.")
-  ADD_INT_PARAMETER(
-      pl, siteDepthMin, "--siteDepthMin",
-      "Specify minimum depth(inclusive) to be included in analysis")
-  ADD_INT_PARAMETER(
-      pl, siteDepthMax, "--siteDepthMax",
-      "Specify maximum depth(inclusive) to be included in analysis")
-  ADD_INT_PARAMETER(pl, siteMACMin, "--siteMACMin",
-                    "Specify minimum Minor Allele Count(inclusive) to be "
-                    "included in analysis")
-  ADD_STRING_PARAMETER(pl, annoType, "--annoType",
-                       "Specify annotation type that is followed by ANNO= in "
-                       "the VCF INFO field, regular expression is allowed ")
-
-  ADD_PARAMETER_GROUP(pl, "Genotype Filter")
-  ADD_INT_PARAMETER(
-      pl, indvDepthMin, "--indvDepthMin",
-      "Specify minimum depth(inclusive) of a sample to be included in analysis")
-  ADD_INT_PARAMETER(
-      pl, indvDepthMax, "--indvDepthMax",
-      "Specify maximum depth(inclusive) of a sample to be included in analysis")
-  ADD_INT_PARAMETER(
-      pl, indvQualMin, "--indvQualMin",
-      "Specify minimum depth(inclusive) of a sample to be included in analysis")
-
-  ADD_PARAMETER_GROUP(pl, "Association Model")
-  ADD_STRING_PARAMETER(pl, modelSingle, "--single",
-                       "Single variant tests, choose from: score, wald, exact, "
-                       "famScore, famLrt, famGrammarGamma, firth")
-  ADD_STRING_PARAMETER(pl, modelBurden, "--burden",
-                       "Burden tests, choose from: cmc, zeggini, mb, exactCMC, "
-                       "rarecover, cmat, cmcWald")
-  ADD_STRING_PARAMETER(pl, modelVT, "--vt",
-                       "Variable threshold tests, choose from: price, analytic")
-  ADD_STRING_PARAMETER(
-      pl, modelKernel, "--kernel",
-      "Kernal-based tests, choose from: SKAT, KBAC, FamSKAT, SKATO")
-  ADD_STRING_PARAMETER(pl, modelMeta, "--meta",
-                       "Meta-analysis related functions to generate summary "
-                       "statistics, choose from: score, cov, dominant, "
-                       "recessive")
-
-  ADD_PARAMETER_GROUP(pl, "Family-based Models")
-  ADD_STRING_PARAMETER(pl, kinship, "--kinship",
-                       "Specify a kinship file for autosomal analysis, use "
-                       "vcf2kinship to generate")
-  ADD_STRING_PARAMETER(pl, xHemiKinship, "--xHemiKinship",
-                       "Provide kinship for the chromosome X hemizygote region")
-  ADD_STRING_PARAMETER(pl, kinshipEigen, "--kinshipEigen",
-                       "Specify eigen decomposition results of a kinship file "
-                       "for autosomal analysis")
-  ADD_STRING_PARAMETER(
-      pl, xHemiKinshipEigen, "--xHemiKinshipEigen",
-      "Specify eigen decomposition results of a kinship file for X analysis")
-
-  ADD_PARAMETER_GROUP(pl, "Grouping Unit ")
-  ADD_STRING_PARAMETER(pl, geneFile, "--geneFile",
-                       "Specify a gene file (for burden tests)")
-  ADD_STRING_PARAMETER(pl, gene, "--gene", "Specify which genes to test")
-  ADD_STRING_PARAMETER(pl, setList, "--setList",
-                       "Specify a list to test (for burden tests)")
-  ADD_STRING_PARAMETER(pl, setFile, "--setFile",
-                       "Specify a list file (for burden tests, first 2 "
-                       "columns: setName chr:beg-end)")
-  ADD_STRING_PARAMETER(pl, set, "--set",
-                       "Specify which set to test (1st column)")
-
-  ADD_PARAMETER_GROUP(pl, "Frequency Cutoff")
-  /*ADD_BOOL_PARAMETER(pl, freqFromFile, "--freqFromFile", "Obtain frequency
-   * from external file")*/
-  // ADD_BOOL_PARAMETER(pl, freqFromControl, "--freqFromControl", "Calculate
-  // frequency from case samples")
-  ADD_DOUBLE_PARAMETER(
-      pl, freqUpper, "--freqUpper",
-      "Specify upper minor allele frequency bound to be included in analysis")
-  ADD_DOUBLE_PARAMETER(
-      pl, freqLower, "--freqLower",
-      "Specify lower minor allele frequency bound to be included in analysis")
-
-  ADD_PARAMETER_GROUP(pl, "Missing Data")
-  ADD_STRING_PARAMETER(
-      pl, impute, "--impute",
-      "Impute missing genotype (default:mean):  mean, hwe, and drop")
-  ADD_BOOL_PARAMETER(
-      pl, imputePheno, "--imputePheno",
-      "Impute phenotype to mean of those have genotypes but no phenotypes")
-  ADD_BOOL_PARAMETER(pl, imputeCov, "--imputeCov",
-                     "Impute each covariate to its mean, instead of drop "
-                     "samples with missing covariates")
-
-  ADD_PARAMETER_GROUP(pl, "Conditional Analysis")
-  ADD_STRING_PARAMETER(pl, condition, "--condition",
-                       "Specify markers to be conditions (specify range)")
-
-  ADD_PARAMETER_GROUP(pl, "Auxiliary Functions")
-  ADD_BOOL_PARAMETER(pl, noweb, "--noweb", "Skip checking new version")
-  ADD_BOOL_PARAMETER(pl, help, "--help", "Print detailed help message")
-  END_PARAMETER_LIST(pl);
-
-  pl.Read(argc, argv);
+  PARSE_PARAMETER(argc, argv);
 
   if (FLAG_help) {
-    pl.Help();
+    PARAMETER_HELP();
     return 0;
   }
 
   welcome();
-  pl.Status();
+  PARAMETER_STATUS();
   if (FLAG_REMAIN_ARG.size() > 0) {
     fprintf(stderr, "Unparsed arguments: ");
     for (unsigned int i = 0; i < FLAG_REMAIN_ARG.size(); i++) {
@@ -409,8 +444,14 @@ int main(int argc, char** argv) {
 
   if (!FLAG_outPrefix.size()) FLAG_outPrefix = "rvtest";
 
-  REQUIRE_STRING_PARAMETER(FLAG_inVcf,
-                           "Please provide input file using: --inVcf");
+  if ((FLAG_inVcf.empty() ? 0 : 1) + (FLAG_inBgen.empty() ? 0 : 1) +
+          (FLAG_inKgg.empty() ? 0 : 1) !=
+      1) {
+    fprintf(stderr,
+            "Please provide one type of input file using: --inVcf, --inBgen or "
+            "--inKgg\n");
+    exit(1);
+  }
 
   // check new version
   if (!FLAG_noweb) {
@@ -433,49 +474,86 @@ int main(int argc, char** argv) {
   logger->info("Program version: %s", VERSION);
   logger->infoToFile("Git Version: %s", GIT_VERSION);
   logger->infoToFile("Parameters BEGIN");
-  pl.WriteToFile(logger->getHandle());
+  PARAMETER_INSTANCE().WriteToFile(logger->getHandle());
   logger->infoToFile("Parameters END");
   logger->sync();
+
+// set up multithreading
+#ifdef _OPENMP
+  if (FLAG_numThread <= 0) {
+    fprintf(stderr, "Invalid number of threads [ %d ], reset to single thread",
+            FLAG_numThread);
+    omp_set_num_threads(1);
+  } else if (FLAG_numThread > omp_get_max_threads()) {
+    int maxThreads = omp_get_max_threads();
+    fprintf(stderr,
+            "Reduced your specified number of threads to the maximum of system "
+            "limit [ %d ]",
+            maxThreads);
+    omp_set_num_threads(maxThreads);
+  } else if (FLAG_numThread == 1) {
+    // need to set to one thread, otherwise all CPUs may be used
+    omp_set_num_threads(1);
+  } else {
+    logger->info("Set number of threads = [ %d ]", FLAG_numThread);
+    omp_set_num_threads(FLAG_numThread);
+  }
+#endif
 
   // start analysis
   time_t startTime = time(0);
   logger->info("Analysis started at: %s", currentTime().c_str());
 
-  GenotypeExtractor ge(FLAG_inVcf);
+  GenotypeExtractor* ge = NULL;
+  if (!FLAG_inVcf.empty()) {
+    ge = new VCFGenotypeExtractor(FLAG_inVcf);
+  } else if (!FLAG_inBgen.empty()) {
+    ge = new BGenGenotypeExtractor(FLAG_inBgen, FLAG_inBgenSample);
+  } else if (!FLAG_inKgg.empty()) {
+    ge = new KGGGenotypeExtractor(FLAG_inKgg);
+  } else {
+    assert(false);
+  }
 
   // set range filters here
-  ge.setRangeList(FLAG_rangeList.c_str());
-  ge.setRangeFile(FLAG_rangeFile.c_str());
+  ge->setRangeList(FLAG_rangeList.c_str());
+  ge->setRangeFile(FLAG_rangeFile.c_str());
 
   // set people filters here
   if (FLAG_peopleIncludeID.size() || FLAG_peopleIncludeFile.size()) {
-    ge.excludeAllPeople();
-    ge.includePeople(FLAG_peopleIncludeID.c_str());
-    ge.includePeopleFromFile(FLAG_peopleIncludeFile.c_str());
+    ge->excludeAllPeople();
+    ge->includePeople(FLAG_peopleIncludeID.c_str());
+    ge->includePeopleFromFile(FLAG_peopleIncludeFile.c_str());
   }
-  ge.excludePeople(FLAG_peopleExcludeID.c_str());
-  ge.excludePeopleFromFile(FLAG_peopleExcludeFile.c_str());
+  ge->excludePeople(FLAG_peopleExcludeID.c_str());
+  ge->excludePeopleFromFile(FLAG_peopleExcludeFile.c_str());
 
+  if (!FLAG_siteFile.empty()) {
+    ge->setSiteFile(FLAG_siteFile);
+    logger->info("Restrict analysis based on specified site file [ %s ]",
+                 FLAG_siteFile.c_str());
+  }
   if (FLAG_siteDepthMin > 0) {
-    ge.setSiteDepthMin(FLAG_siteDepthMin);
+    ge->setSiteDepthMin(FLAG_siteDepthMin);
     logger->info("Set site depth minimum to %d", FLAG_siteDepthMin);
   }
   if (FLAG_siteDepthMax > 0) {
-    ge.setSiteDepthMax(FLAG_siteDepthMax);
+    ge->setSiteDepthMax(FLAG_siteDepthMax);
     logger->info("Set site depth maximum to %d", FLAG_siteDepthMax);
   }
   if (FLAG_siteMACMin > 0) {
-    ge.setSiteMACMin(FLAG_siteMACMin);
+    ge->setSiteMACMin(FLAG_siteMACMin);
     logger->info("Set site minimum MAC to %d", FLAG_siteDepthMin);
   }
   if (FLAG_annoType != "") {
-    ge.setAnnoType(FLAG_annoType.c_str());
+    ge->setAnnoType(FLAG_annoType.c_str());
     logger->info("Set annotype type filter to %s", FLAG_annoType.c_str());
   }
 
   std::vector<std::string> vcfSampleNames;
-  ge.getPeopleName(&vcfSampleNames);
-  logger->info("Loaded [ %zu ] samples from VCF files", vcfSampleNames.size());
+  ge->getPeopleName(&vcfSampleNames);
+  logger->info("Loaded [ %zu ] samples from genotype files",
+               vcfSampleNames.size());
 
   DataLoader dataLoader;
   dataLoader.setPhenotypeImputation(FLAG_imputePheno);
@@ -524,7 +602,7 @@ int main(int argc, char** argv) {
 
     // rearrange phenotypes
     // drop samples from phenotype or vcf
-    matchPhenotypeAndVCF("missing phenotype", &dataLoader, &ge);
+    matchPhenotypeAndVCF("missing phenotype", &dataLoader, ge);
 
     // // phenotype names (vcf sample names) arranged in the same order as in
     // VCF
@@ -536,7 +614,7 @@ int main(int argc, char** argv) {
     //           &phenotypeInOrder, FLAG_imputePheno);
     // if (vcfSampleToDrop.size()) {
     //   // exclude this sample from parsing VCF
-    //   ge.excludePeople(vcfSampleToDrop);
+    //   ge->excludePeople(vcfSampleToDrop);
     //   // output dropped samples
     //   for (size_t i = 0; i < vcfSampleToDrop.size(); ++i) {
     //     if (i == 0)
@@ -570,7 +648,7 @@ int main(int argc, char** argv) {
     //   // phenotypeNameInOrder
     // }
     dataLoader.loadCovariate(FLAG_cov, FLAG_covName);
-    matchCovariateAndVCF("missing covariate", &dataLoader, &ge);
+    matchCovariateAndVCF("missing covariate", &dataLoader, ge);
 
     // // load covariate
     // Matrix covariate;
@@ -621,20 +699,20 @@ int main(int argc, char** argv) {
     //   for (std::set<std::string>::const_iterator iter =
     //            sampleToDropInCovariate.begin();
     //        iter != sampleToDropInCovariate.end(); ++iter) {
-    //     ge.excludePeople(iter->c_str());
+    //     ge->excludePeople(iter->c_str());
     //   }
     // }
   } else {
     dataLoader.loadMultiplePhenotype(FLAG_multiplePheno, FLAG_pheno, FLAG_cov);
 
-    matchPhenotypeAndVCF("missing phenotype", &dataLoader, &ge);
-    matchCovariateAndVCF("missing covariate", &dataLoader, &ge);
+    matchPhenotypeAndVCF("missing phenotype", &dataLoader, ge);
+    matchCovariateAndVCF("missing covariate", &dataLoader, ge);
   }
 
   dataLoader.loadSex();
   if (FLAG_sex) {
     dataLoader.useSexAsCovariate();
-    matchCovariateAndVCF("missing sex", &dataLoader, &ge);
+    matchCovariateAndVCF("missing sex", &dataLoader, ge);
   }
   // // load sex
   // std::vector<int> sex;
@@ -656,7 +734,7 @@ int main(int argc, char** argv) {
 
   if (!FLAG_condition.empty()) {
     dataLoader.loadMarkerAsCovariate(FLAG_inVcf, FLAG_condition);
-    matchCovariateAndVCF("missing in conditioned marker(s)", &dataLoader, &ge);
+    matchCovariateAndVCF("missing in conditioned marker(s)", &dataLoader, ge);
   }
   // // load conditional markers
   // if (!FLAG_condition.empty()) {
@@ -702,7 +780,6 @@ int main(int argc, char** argv) {
   // record raw phenotype
   g_SummaryHeader->recordPhenotype("Trait",
                                    dataLoader.getPhenotype().extractCol(0));
-
   // adjust phenotype
   // bool binaryPhenotype;
   if (FLAG_qtl) {
@@ -779,7 +856,7 @@ int main(int argc, char** argv) {
   //     logger->info("Now applying inverse normalize transformation.");
   //     inverseNormalizeLikeMerlin(&phenotypeInOrder);
   //     g_SummaryHeader->setInverseNormalize(FLAG_inverseNormal);
-  //     logger->info("DONE: inverse normal transformation finished.");
+  //     logger->info("DONE: inverse normalization transformation finished.");
   //   }
   // }
 
@@ -794,7 +871,6 @@ int main(int argc, char** argv) {
   //   logger->fatal("There are 0 samples with valid phenotypes, quitting...");
   //   exit(1);
   // }
-
   logger->info("Analysis begins with [ %d ] samples...",
                dataLoader.getPhenotype().nrow());
   //////////////////////////////////////////////////////////////////////////////
@@ -812,7 +888,7 @@ int main(int argc, char** argv) {
   if (dataLoader.isBinaryPhenotype()) {
     modelManager.setBinaryOutcome();
     matchPhenotypeAndVCF("missing phenotype (not case/control)", &dataLoader,
-                         &ge);
+                         ge);
   } else {
     modelManager.setQuantitativeOutcome();
   }
@@ -830,7 +906,7 @@ int main(int argc, char** argv) {
   const std::vector<FileWriter*>& fOuts = modelManager.getResultFile();
   const size_t numModel = model.size();
 
-  // TODO: optimize this by avoidding data copying
+  // TODO: optimize this to avoid data copying
   Matrix phenotypeMatrix;
   Matrix covariate;
   toMatrix(dataLoader.getPhenotype(), &phenotypeMatrix);
@@ -890,7 +966,7 @@ int main(int argc, char** argv) {
   DataConsolidator dc;
   dc.setSex(&dataLoader.getSex());
   dc.setFormula(&dataLoader.getFormula());
-  dc.setGenotypeCounter(ge.getGenotypeCounter());
+  dc.setGenotypeCounter(ge->getGenotypeCounter());
 
   // load kinshp if needed by family models
   if (modelManager.hasFamilyModel() ||
@@ -947,45 +1023,63 @@ int main(int argc, char** argv) {
   // genotype will be extracted and stored
   Matrix& genotype = dc.getOriginalGenotype();
   if (FLAG_freqUpper > 0) {
-    ge.setSiteFreqMax(FLAG_freqUpper);
+    ge->setSiteFreqMax(FLAG_freqUpper);
     logger->info("Set upper minor allele frequency limit to %g",
                  FLAG_freqUpper);
   }
   if (FLAG_freqLower > 0) {
-    ge.setSiteFreqMin(FLAG_freqLower);
+    ge->setSiteFreqMin(FLAG_freqLower);
     logger->info("Set lower minor allele frequency limit to %g",
                  FLAG_freqLower);
   }
 
   // handle sex chromosome
-  ge.setParRegion(&parRegion);
-  ge.setSex(&dataLoader.getSex());
+  ge->setParRegion(&parRegion);
+  ge->setSex(&dataLoader.getSex());
 
   // use dosage instead GT
   if (!FLAG_dosageTag.empty()) {
-    ge.setDosageTag(FLAG_dosageTag);
+    ge->setDosageTag(FLAG_dosageTag);
     logger->info("Use dosage genotype from VCF flag %s.",
                  FLAG_dosageTag.c_str());
+  }
+  if (FLAG_multiAllele) {
+    ge->enableMultiAllelicMode();
+    logger->info("Enable analysis using multiple allelic models");
   }
 
   // genotype QC options
   if (FLAG_indvDepthMin > 0) {
-    ge.setGDmin(FLAG_indvDepthMin);
+    ge->setGDmin(FLAG_indvDepthMin);
     logger->info("Minimum GD set to %d (or marked as missing genotype).",
                  FLAG_indvDepthMin);
   }
   if (FLAG_indvDepthMax > 0) {
-    ge.setGDmax(FLAG_indvDepthMax);
+    ge->setGDmax(FLAG_indvDepthMax);
     logger->info("Maximum GD set to %d (or marked as missing genotype).",
                  FLAG_indvDepthMax);
   }
   if (FLAG_indvQualMin > 0) {
-    ge.setGQmin(FLAG_indvQualMin);
+    ge->setGQmin(FLAG_indvQualMin);
     logger->info("Minimum GQ set to %d (or marked as missing genotype).",
                  FLAG_indvQualMin);
   }
 
+  // e.g. check colinearity and correlations between predictors
   dc.preRegressionCheck(phenotypeMatrix, covariate);
+
+  // prepare PLINK files for BoltLMM model
+  if (!FLAG_boltPlink.empty()) {
+    if (dc.prepareBoltModel(FLAG_boltPlink,
+                            dataLoader.getPhenotype().getRowName(),
+                            dataLoader.getPhenotype())) {
+      logger->error(
+          "Failed to prepare inputs for BOLT-LMM association test model with "
+          "this prefix [ %s ]!",
+          FLAG_boltPlink.c_str());
+      exit(1);
+    }
+  }
 
   logger->info("Analysis started");
   Result& buf = dc.getResult();
@@ -997,6 +1091,9 @@ int main(int argc, char** argv) {
   if (rangeMode == "Single" && singleVariantMode) {  // use line by line mode
     buf.addHeader("CHROM");
     buf.addHeader("POS");
+    if (FLAG_outputID) {
+      buf.addHeader("ID");
+    }
     buf.addHeader("REF");
     buf.addHeader("ALT");
     buf.addHeader("N_INFORMATIVE");
@@ -1009,7 +1106,7 @@ int main(int argc, char** argv) {
     int variantProcessed = 0;
     while (true) {
       buf.clearValue();
-      int ret = ge.extractSingleGenotype(&genotype, &buf);
+      int ret = ge->extractSingleGenotype(&genotype, &buf);
 
       if (ret == GenotypeExtractor::FILE_END) {  // reach file end
         break;
@@ -1047,6 +1144,9 @@ int main(int argc, char** argv) {
     buf.addHeader(rangeMode);
     buf.addHeader("CHROM");
     buf.addHeader("POS");
+    if (FLAG_outputID) {
+      buf.addHeader("ID");
+    }
     buf.addHeader("REF");
     buf.addHeader("ALT");
     buf.addHeader("N_INFORMATIVE");
@@ -1060,11 +1160,11 @@ int main(int argc, char** argv) {
     int variantProcessed = 0;
     for (size_t i = 0; i < geneRange.size(); ++i) {
       geneRange.at(i, &geneName, &rangeList);
-      ge.setRange(rangeList);
+      ge->setRange(rangeList);
 
       while (true) {
         buf.clearValue();
-        int ret = ge.extractSingleGenotype(&genotype, &buf);
+        int ret = ge->extractSingleGenotype(&genotype, &buf);
         if (ret == GenotypeExtractor::FILE_END) {  // reach end of this region
           break;
         }
@@ -1113,13 +1213,12 @@ int main(int argc, char** argv) {
     std::string geneName;
     RangeList rangeList;
     int variantProcessed = 0;
-    ge.enableAutoMerge();
+    ge->enableAutoMerge();
     for (size_t i = 0; i < geneRange.size(); ++i) {
       geneRange.at(i, &geneName, &rangeList);
-      ge.setRange(rangeList);
-
+      ge->setRange(rangeList);
       buf.clearValue();
-      int ret = ge.extractMultipleGenotype(&genotype);
+      int ret = ge->extractMultipleGenotype(&genotype);
 
       if (ret != GenotypeExtractor::SUCCEED) {
         logger->error("Extract genotype failed for gene %s!", geneName.c_str());
@@ -1166,5 +1265,6 @@ int main(int argc, char** argv) {
   int elapsedSecond = (int)(endTime - startTime);
   logger->info("Analysis took %d seconds", elapsedSecond);
 
+  fputs("RVTESTS finished successfully\n", stdout);
   return 0;
 }

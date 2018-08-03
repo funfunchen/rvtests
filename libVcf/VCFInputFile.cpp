@@ -23,8 +23,9 @@ void VCFInputFile::setRangeMode() {
     this->tabixReader = new TabixReader(this->fileName);
     if (!this->tabixReader->good()) {
       fprintf(stderr,
-              "[ERROR] Cannot read VCF by range, please check your have index "
-              "(or create one use tabix).\nQuitting...");
+              "[ERROR] Cannot read VCF by range, please verify you have the "
+              "index file"
+              "(or create one using tabix).\nQuitting...");
       abort();
     } else {
       this->mode = VCFInputFile::VCF_RANGE_MODE;
@@ -37,8 +38,9 @@ void VCFInputFile::setRangeMode() {
   } else if (mode == BCF_MODE) {
     if (!this->bcfReader->good() || !this->bcfReader->indexed()) {
       fprintf(stderr,
-              "[ERROR] Cannot read BCF by range, please check your have index "
-              "(or create one use bcftools).\nQuitting...");
+              "[ERROR] Cannot read BCF by range, please verify you have the "
+              "index file "
+              "(or create one using bcftools).\nQuitting...");
       abort();
     }
     // Auto-merge should be handled by VCFInputFile, not in bcfReader
@@ -161,30 +163,6 @@ void VCFInputFile::init(const char* fn) {
   // this->clearRange();
 }
 
-bool VCFInputFile::readRecord() {
-  int nRead = 0;
-  while (true) {
-    if (this->mode == VCF_LINE_MODE) {
-      nRead = this->fp->readLine(&this->line);
-    } else if (this->mode == VCF_RANGE_MODE) {
-      nRead = this->tabixReader->readLine(&this->line);
-    } else if (this->mode == BCF_MODE) {
-      nRead = this->bcfReader->readLine(&this->line);
-    }
-    if (!nRead) return false;
-
-    // star parsing
-    bool ret = this->record.parse(&this->line);
-    if (ret) {
-      reportReadError(this->line);
-    }
-    if (!this->passFilter()) continue;
-    if (!this->isAllowedSite()) continue;
-    // break;
-    return true;
-  }
-}
-
 void VCFInputFile::close() {
   // closeIndex();
   this->record.deleteIndividual();
@@ -202,6 +180,87 @@ void VCFInputFile::close() {
   }
 }
 
+bool VCFInputFile::readRecord() {
+  int nRead = 0;
+  while (true) {
+    if (this->mode == VCF_LINE_MODE) {
+      nRead = this->fp->readLine(&this->line);
+    } else if (this->mode == VCF_RANGE_MODE) {
+      nRead = this->tabixReader->readLine(&this->line);
+    } else if (this->mode == BCF_MODE) {
+      nRead = this->bcfReader->readLine(&this->line);
+    }
+    if (!nRead) return false;
+
+    // star parsing
+    int ret;
+    this->record.attach(&this->line);
+    ret = this->record.parseSite();
+    if (ret) {
+      reportReadError(this->line);
+    }
+    if (!this->isAllowedSite()) continue;
+
+    ret = this->record.parseIndividual();
+    if (ret) {
+      reportReadError(this->line);
+    }
+    if (!this->passFilter()) continue;
+
+    // break;
+    return true;
+  }
+}
+
+//////////////////////////////////////////////////
+// Sample inclusion/exclusion
+void VCFInputFile::includePeople(const char* s) {
+  this->record.includePeople(s);
+}
+void VCFInputFile::includePeople(const std::vector<std::string>& v) {
+  this->record.includePeople(v);
+}
+void VCFInputFile::includePeopleFromFile(const char* fn) {
+  this->record.includePeopleFromFile(fn);
+}
+void VCFInputFile::includeAllPeople() { this->record.includeAllPeople(); }
+void VCFInputFile::excludePeople(const char* s) {
+  this->record.excludePeople(s);
+}
+void VCFInputFile::excludePeople(const std::vector<std::string>& v) {
+  this->record.excludePeople(v);
+}
+void VCFInputFile::excludePeopleFromFile(const char* fn) {
+  this->record.excludePeopleFromFile(fn);
+}
+void VCFInputFile::excludeAllPeople() { this->record.excludeAllPeople(); }
+
+//////////////////////////////////////////////////
+// Adjust range collections
+void VCFInputFile::enableAutoMerge() { this->autoMergeRange = true; }
+void VCFInputFile::disableAutoMerge() { this->autoMergeRange = false; }
+// void clearRange();
+void VCFInputFile::setRangeFile(const char* fn) {
+  if (!fn || strlen(fn) == 0) return;
+  RangeList r;
+  r.addRangeFile(fn);
+  this->setRange(r);
+}
+// @param l is a string of range(s)
+void VCFInputFile::setRange(const char* chrom, int begin, int end) {
+  RangeList r;
+  r.addRange(chrom, begin, end);
+  this->setRange(r);
+}
+void VCFInputFile::setRange(const RangeList& rl) { this->setRangeList(rl); }
+void VCFInputFile::setRangeList(const std::string& l) {
+  if (l.empty()) return;
+
+  RangeList r;
+  r.addRangeList(l);
+  this->setRange(r);
+}
+// this function the entry point for all function add/change region list
 void VCFInputFile::setRangeList(const RangeList& rl) {
   if (rl.size() == 0) return;
 

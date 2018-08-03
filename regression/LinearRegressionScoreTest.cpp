@@ -1,9 +1,13 @@
 #include "LinearRegressionScoreTest.h"
 #include "MatrixOperation.h"
+#include "libsrc/MathCholesky.h"
+#include "libsrc/MathSVD.h"
+#include "libsrc/MathStats.h"
 
 #include "gsl/gsl_cdf.h"  // use gsl_cdf_chisq_Q
 
-LinearRegressionScoreTest::LinearRegressionScoreTest() : pvalue(0.0){};
+LinearRegressionScoreTest::LinearRegressionScoreTest()
+    : pvalue(0.0), stat(0.0){};
 
 bool LinearRegressionScoreTest::FitLinearModel(Matrix& X, Vector& y,
                                                int colToTest) {
@@ -309,4 +313,17 @@ void LinearRegressionScoreTest::splitMatrix(Matrix& x, int col, Matrix& xnull,
       }
     }
   }
+}
+
+const double LinearRegressionScoreTest::GetSEBeta(int idx) const {
+  // U = X'Y
+  // V = X'X * sigma2
+  // beta = X'Y / X'X
+  // Var(beta) = Var(U) / (X'X)^2 = V / (V / sigma2)^2 = sigma2^2 / V
+  // SE(beta) = sigma2 / sqrt(V)
+  const double v = this->Vmatrix[idx][idx];
+  if (v == 0.0) {
+    return 0.0;
+  }
+  return (this->GetSigma2() / sqrt(v));
 }

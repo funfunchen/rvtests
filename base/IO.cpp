@@ -1,10 +1,12 @@
 #include "IO.h"
+
 // cannot forward declare an typdef anonymous struct
 // http://stackoverflow.com/questions/804894/forward-declaration-of-a-typedef-in-c
 // so include the header file
-#include "bgzf.h"
+#include "third/samtools/bgzf.h"
 
 #include <algorithm>
+#include "base/Utils.h"
 
 //////////////////////////////////////////////////
 // Plain file reader
@@ -430,7 +432,7 @@ int BufferedReader::search(int left, int right, const char* sep) {
   assert(right <= bufEnd);
   const char* p;
   for (int i = left; i < right; ++i) {
-    p = strchr(sep, buf[i]);
+    p = ssechr(sep, buf[i]);
     if (p != NULL) {
       bufPtr = i + 1;
       return i;
@@ -446,12 +448,12 @@ int BufferedReader::search(int left, int right, const char* sep1,
   assert(right <= bufEnd);
   const char* p;
   for (int i = left; i < right; ++i) {
-    p = strchr(sep1, buf[i]);
+    p = ssechr(sep1, buf[i]);
     if (p != NULL) {
       bufPtr = i + 1;
       return i;
     }
-    p = strchr(sep2, buf[i]);
+    p = ssechr(sep2, buf[i]);
     if (p != NULL) {
       bufPtr = i + 1;
       return i;
@@ -503,11 +505,13 @@ int BufferedReader::readLineBySep(std::vector<std::string>* fields,
     field.append(buf + oldPtr, ptr - oldPtr);
     if (ptr == bufEnd) {  // not found
       refill();
-      if (bufEnd == 0) {  // reach file end
-        fields->resize(fields->size() - 1);
+      if (bufEnd == 0) {               // reach file end
+        if (fields->back().empty()) {  // just appended an empty element
+          fields->resize(fields->size() - 1);
+        }
         return fields->size();
       }
-    } else if (strchr(sep, buf[ptr])) {  // separator
+    } else if (ssechr(sep, buf[ptr])) {  // separator
       fields->resize(fields->size() + 1);
       fields->back().resize(0);
     } else if (buf[ptr] == '\r') {
@@ -520,9 +524,9 @@ int BufferedReader::readLineBySep(std::vector<std::string>* fields,
 //////////////////////////////////////////////////
 class TextFileWriter : public AbstractFileWriter {
  public:
-  TextFileWriter(const char* fn, bool append = false) {
-    if (this->open(fn, append)) {
-      fprintf(stderr, "Cannot create text file %s\n", fn);
+  TextFileWriter(const std::string& fn, bool append = false) {
+    if (this->open(fn.c_str(), append)) {
+      fprintf(stderr, "Cannot create text file %s\n", fn.c_str());
     }
   }
   virtual ~TextFileWriter() {
@@ -568,9 +572,9 @@ class TextFileWriter : public AbstractFileWriter {
 
 class GzipFileWriter : public AbstractFileWriter {
  public:
-  GzipFileWriter(const char* fn, bool append = false) {
-    if (this->open(fn, append)) {
-      fprintf(stderr, "Cannot create gzip file %s\n", fn);
+  GzipFileWriter(const std::string& fn, bool append = false) {
+    if (this->open(fn.c_str(), append)) {
+      fprintf(stderr, "Cannot create gzip file %s\n", fn.c_str());
     }
   }
   virtual ~GzipFileWriter() {
@@ -607,9 +611,9 @@ class GzipFileWriter : public AbstractFileWriter {
 
 class Bzip2FileWriter : public AbstractFileWriter {
  public:
-  Bzip2FileWriter(const char* fn, bool append = false) : bzp(NULL) {
-    if (this->open(fn, append)) {
-      fprintf(stderr, "Cannot create bzip2 file %s\n", fn);
+  Bzip2FileWriter(const std::string& fn, bool append = false) : bzp(NULL) {
+    if (this->open(fn.c_str(), append)) {
+      fprintf(stderr, "Cannot create bzip2 file %s\n", fn.c_str());
     }
   }
   virtual ~Bzip2FileWriter() {
@@ -678,9 +682,9 @@ class Bzip2FileWriter : public AbstractFileWriter {
 
 class BGZipFileWriter : public AbstractFileWriter {
  public:
-  BGZipFileWriter(const char* fn, bool append = false) {
-    if (this->open(fn)) {
-      fprintf(stderr, "Cannot create BGzip file %s\n", fn);
+  BGZipFileWriter(const std::string& fn, bool append = false) {
+    if (this->open(fn.c_str())) {
+      fprintf(stderr, "Cannot create BGzip file %s\n", fn.c_str());
     }
   }
   virtual ~BGZipFileWriter() {
@@ -701,6 +705,18 @@ class BGZipFileWriter : public AbstractFileWriter {
   BGZF* fp;
 };  // end BGZipFileWriter
 
+class StdoutWriter : public AbstractFileWriter {
+ public:
+  int open(const char* fn, bool append = false) { return 0; }
+  void close() {}
+  int write(const char* s) { return fputs(s, stdout); }
+  int writeLine(const char* s) {
+    int ret = fputs(s, stdout);
+    putchar('\n');
+    return (ret + 1);
+  }
+};
+
 #define DEFAULT_WRITER_BUFFER 4096
 class BufferedFileWriter : public AbstractFileWriter {
  public:
@@ -716,10 +732,6 @@ class BufferedFileWriter : public AbstractFileWriter {
     }
     this->buf[bufLen] = '\0';
     this->bufPtr = 0;
-
-    if (!this->buf) {
-      fprintf(stderr, "Buffer allocation failed!\n");
-    }
     this->f = f;
   }
   ~BufferedFileWriter() {
@@ -858,10 +870,7 @@ FileType AbstractFileReader::checkFileType(const char* fileName) {
  */
 int removeEmptyField(std::vector<std::string>* fields) {
   int s = fields->size();
-  fields->erase(
-      std::remove_if(fields->begin(), fields->end(),
-                     [](const std::string& a) { return a.size() > 0; }),
-      fields->end());
+  fields->erase(std::remove(fields->begin(), fields->end(), ""), fields->end());
   s -= fields->size();
   return s;
 };
@@ -906,14 +915,20 @@ bool fileExists(std::string fn) {
   return false;
 }
 
-FileWriter::FileWriter(const char* fileName, bool append) {
-  // int l = strlen(fileName);
-  if (this->checkSuffix(fileName, ".gz")) {
-    this->fpRaw = new GzipFileWriter(fileName, append);
-  } else if (this->checkSuffix(fileName, ".bz2")) {
-    this->fpRaw = new Bzip2FileWriter(fileName, append);
+FileWriter::FileWriter(const std::string& fileName, bool append) {
+  if (fileName == "stdout") {
+    this->fp = new StdoutWriter();
+    this->fpRaw = NULL;
+    this->createBuffer();
+    return;
+  }
+
+  if (this->checkSuffix(fileName.c_str(), ".gz")) {
+    this->fpRaw = new GzipFileWriter(fileName.c_str(), append);
+  } else if (this->checkSuffix(fileName.c_str(), ".bz2")) {
+    this->fpRaw = new Bzip2FileWriter(fileName.c_str(), append);
   } else {
-    this->fpRaw = new TextFileWriter(fileName, append);
+    this->fpRaw = new TextFileWriter(fileName.c_str(), append);
   }
   this->fp = new BufferedFileWriter(this->fpRaw);
   if (!this->fpRaw || !this->fp) {
@@ -923,7 +938,15 @@ FileWriter::FileWriter(const char* fileName, bool append) {
 
   this->createBuffer();
 }
-FileWriter::FileWriter(const char* fileName, FileType t) {
+
+FileWriter::FileWriter(const std::string& fileName, FileType t) {
+  if (fileName == "stdout") {
+    this->fp = new StdoutWriter();
+    this->fpRaw = NULL;
+    this->createBuffer();
+    return;
+  }
+
   bool append = false;
   if (PLAIN == t) {
     this->fpRaw = new TextFileWriter(fileName, append);

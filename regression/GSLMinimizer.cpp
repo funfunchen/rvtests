@@ -4,22 +4,33 @@
 
 #include "GSLMinimizer.h"
 
-Minimizer::Minimizer() : epsabs(0.001), epsrel(0.0), maxIter(100) {
+Minimizer::Minimizer()
+    : finalX(NAN), finalY(NAN), epsabs(0.001), epsrel(0.0), maxIter(100) {
   T = gsl_min_fminimizer_brent;
   s = gsl_min_fminimizer_alloc(T);
 }
+
 Minimizer::~Minimizer() { gsl_min_fminimizer_free(s); }
+
 int Minimizer::minimize(gsl_function F, double startValue, double lowerBound,
                         double upperBound) {
-  gsl_min_fminimizer_set(s, &F, startValue, lowerBound, upperBound);
+  gsl_error_handler_t* oldHandler = gsl_set_error_handler_off();
   int iter = 0;
-  int status;
   double a, b;
+
+  status = gsl_min_fminimizer_set(s, &F, startValue, lowerBound, upperBound);
+  if (status != GSL_SUCCESS) {
+#ifndef NDEBUG
+    fprintf(stderr, "Minimizer failed due to: %s\n", gsl_strerror(status));
+#endif
+    goto errorLabel;
+  }
+
   do {
     iter++;
     status = gsl_min_fminimizer_iterate(s);
     if (status == GSL_EBADFUNC || status == GSL_FAILURE) {
-      return -1;
+      goto errorLabel;
     }
 
     finalX = gsl_min_fminimizer_x_minimum(s);
@@ -34,7 +45,7 @@ int Minimizer::minimize(gsl_function F, double startValue, double lowerBound,
     if (status == GSL_SUCCESS) {
       // printf ("Converged:\n");
       finalY = gsl_min_fminimizer_f_minimum(s);
-      return 0;
+      goto successLabel;
     }
     // printf("%5d\ta=%g\tb=%g\tfinalX=%g\n", iter, a, b, finalX);
     // printf ("%5d .7f, [.7f] "
@@ -43,5 +54,10 @@ int Minimizer::minimize(gsl_function F, double startValue, double lowerBound,
     //         m, m - m_expected, b - a);
   } while (status == GSL_CONTINUE && iter < this->maxIter);
 
+successLabel:
+  gsl_set_error_handler(oldHandler);
+  return 0;
+errorLabel:
+  gsl_set_error_handler(oldHandler);
   return -1;
 }

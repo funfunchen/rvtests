@@ -20,6 +20,10 @@ $(BCF_INC) $(BCF_LIB) $(SAMTOOLS_INC) $(SAMTOOLS_LIB):
 	$(MAKE) -C $(ROOT)/third samtools
 $(RAPIDJSON_INC):
 	$(MAKE) -C $(ROOT)/third rapidjson
+$(SQLITE_INC) $(SQLITE_LIB):
+	$(MAKE) -C $(ROOT)/third sqlite
+$(ZSTD_INC) $(ZSTD_LIB):
+	$(MAKE) -C $(ROOT)/third zstd
 
 ## our libs
 $(BASE_LIB):
@@ -30,6 +34,10 @@ $(VCF_LIB):
 	$(MAKE) -C $(ROOT)/libVcf $(MAKECMDGOALS)
 $(VCF_LIB_DBG):
 	$(MAKE) -C $(ROOT)/libVcf $(MAKECMDGOALS)
+$(BGEN_LIB):
+	$(MAKE) -C $(ROOT)/libBgen $(MAKECMDGOALS)
+$(BGEN_LIB_DBG):
+	$(MAKE) -C $(ROOT)/libBgen $(MAKECMDGOALS)
 $(REGRESSION_LIB): $(EIGEN_INC)
 	$(MAKE) -C $(ROOT)/regression $(MAKECMDGOALS)
 $(REGRESSION_LIB_DBG):

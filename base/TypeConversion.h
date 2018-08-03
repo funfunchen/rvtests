@@ -3,9 +3,11 @@
 
 #include <errno.h>
 #include <limits.h>
-#include <math.h>  // for HUGE_VALH, HUGE_VALL
+#include <math.h>    // for HUGE_VALH, HUGE_VALL
+#include <stdint.h>  // definition for uint8_t
 #include <stdio.h>
 #include <stdlib.h>
+#include <set>
 #include <sstream>
 #include <vector>
 
@@ -42,10 +44,53 @@
 #endif
 
 // convert double/int/byte to string type
+// note: uint8_t by default is treated as char
 template <class T>
 inline std::string toString(T i) {
   std::stringstream ss;
   ss << i;
+  return ss.str();
+}
+
+template <class T>
+inline std::string toString(const std::set<T>& in, const std::string& sep) {
+  if (in.empty()) {
+    return "";
+  }
+  std::stringstream ss;
+  typename std::set<T>::const_iterator iter = in.begin();
+  for (; iter != in.end(); ++iter) {
+    ss << *iter;
+    ss << sep;
+  }
+  std::string ret = ss.str();
+  ret.resize(ret.size() - sep.size());
+  return ret;
+}
+
+template <>
+inline std::string toString(const std::set<uint8_t>& in,
+                            const std::string& sep) {
+  std::stringstream ss;
+  std::set<uint8_t>::const_iterator iter = in.begin();
+  for (; iter != in.end(); ++iter) {
+    ss << (int)*iter;
+    ss << sep;
+  }
+  std::string ret = ss.str();
+  ret.resize(ret.size() - sep.size());
+  return ret;
+}
+
+template <class T>
+inline std::string toString(const std::vector<T>& in, const std::string& sep) {
+  std::stringstream ss;
+  for (size_t i = 0; i != in.size(); ++i) {
+    if (i) {
+      ss << sep;
+    }
+    ss << in;
+  }
   return ss.str();
 }
 
@@ -81,26 +126,7 @@ std::string toStringWithComma(int in);
 
 // convert std::string to integer
 // @return true if conversion succeed
-inline bool str2int(const char* input, int* output) {
-  char* endptr;
-  long val;
-  errno = 0;
-  val = strtol(input, &endptr, 10);
-
-  if ((errno == ERANGE && (val == LONG_MAX || val == LONG_MIN)) ||
-      (errno != 0 && val == 0)) {
-    perror("strtol");
-    return false;
-  }
-
-  if (endptr == input) {
-    // no digits found
-    return false;
-  }
-
-  *output = val;
-  return true;
-}
+bool str2int(const char* input, int* output);
 
 // convert std::string to integer
 // @return true if conversion succeed
@@ -117,12 +143,28 @@ inline bool str2double(const char* input, double* output) {
   errno = 0;
   val = strtod(input, &endptr);
 
-  if ((errno == ERANGE && (val == HUGE_VALF || val == HUGE_VALL)) ||
-      (errno != 0 && val == 0.)) {
+  if (errno == ERANGE) {
+#ifndef NDEBUG
+    fprintf(stderr, "Over/under flow happened: %s\n", input);
     perror("strtod");
+#endif
     return false;
   }
-
+  if (errno == EINVAL) {
+    // Ignore error here to avoid displaying:
+    // "strtod: Invalid argument" (issue #32)
+    // Reason: musl has different implementaiton of strtod,
+    // musl set errno = 22 in strtod("NA")
+    // glibc set errno = 0 in strtod("NA")
+    return false;
+  }
+  if (errno != 0 && val == 0.) {
+#ifndef NDEBUG
+    fprintf(stderr, "Unknown conversion error happened: %s\n", input);
+    perror("strtod");
+#endif
+    return false;
+  }
   if (endptr == input) {
     // no digits found
     return false;

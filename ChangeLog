@@ -1,3 +1,85 @@
+2017-10-09  Xiaowei Zhan  <zhanxw@fantasia.csgstat.sph.umich.edu>
+
+	* Support BGEN format (see example/experimental/cmd.sh)
+	* Add bgen2vcf, bgenFileInfo utitlies
+	* Add timeout when checking new version
+	* Improve speed of covariance calculation
+	* Update combineKinship.py
+	* Support KGGSeq inputs
+
+2017-08-18  Xiaowei Zhan  <zhanxw@fantasia.csgstat.sph.umich.edu>
+
+	* Improve speed of covariance calculations
+	* Clean codes
+
+2017-07-13  Xiaowei Zhan  <zhanxw@fantasia.csgstat.sph.umich.edu>
+
+	* Fix beta estimation in binary score tests for unrelated individuals
+
+2017-06-13  Xiaowei Zhan  <zhanxw@fantasia.csgstat.sph.umich.edu>
+
+	* Fix a bug related Wald test outputs (fix #30)
+	* Fix zero af in famscore (fix #34)
+
+2017-06-09  Xiaowei Zhan  <zhanxw@fantasia.csgstat.sph.umich.edu>
+
+	* Add "--outputID" to output VCF ID to association results (fix #14, #24)
+	* Improve error messages when loading decomposed kinship file (fix #29)
+	* Add "RVTESTS successfully exit" to stdout (fix #31)
+	* Add FASTLMM_DEBUG environment variable to ease debugging (refer to #32)
+	* Fix strtol related warning (possibly) (refer to #33)
+	* Clean codes
+
+2017-04-27  Xiaowei Zhan  <zhanxw@fantasia.csgstat.sph.umich.edu>
+
+	* Add boltCov model
+
+2017-04-14  Xiaowei Zhan  <zhanxw@fantasia.csgstat.sph.umich.edu>
+
+	* Fix a critical bug related to AF calculation (issue 15)
+	* Fix siteFile flag and provide prompt when it's used
+
+2017-04-12  Xiaowei Zhan  <zhanxw@fantasia.csgstat.sph.umich.edu>
+
+	* Support comma as a separator in parameter options
+
+2017-03-07  Xiaowei Zhan  <zhanxw@fantasia.csgstat.sph.umich.edu>
+
+	* Fix SE calculation in '--single score' (continuous/binary traits)
+	* Add --numThreads option (may increase speed)
+	* Improve BoltLMM model
+	* Add more test cases
+	* Fix .dim file outputs from vcf2kinship
+
+2017-02-28  Xiaowei Zhan  <zhanxw@fantasia.csgstat.sph.umich.edu>
+
+	* Fix a bug when loadindg a group of varaints
+	* Fix SE calculation in '--single score' for quantitative traits
+	* Fix BoltLMM implementation
+	* Improve SkatO robustness
+	* Revise documentation
+
+2017-02-10  Xiaowei Zhan  <zhanxw@fantasia.csgstat.sph.umich.edu>
+
+	* Fix bugs (issue #13)
+	* Improve supports for multi-allelic variants
+	* Improve codes (more functions), revise documentation
+
+2017-01-10  Xiaowei Zhan  <zhanxw@fantasia.csgstat.sph.umich.edu>
+
+	* Add more test cases
+	* Add support for loading multiple phenotypes (--multiplePheno)
+	* Add a score model for multiple phenotypes (--single mtscore)
+	* Add an approx model for multiple phenotypes (--single fastmtscore)
+	* Change bolt model options (--meta score[bolt] --boltPlink)
+	* Fix a bug that crashed SKAT-O
+	* Clean codes
+
+2016-09-28  Xiaowei Zhan  <zhanxw@fantasia.csgstat.sph.umich.edu>
+
+	* Add a new fast meta-analysis models (--meta bolt[genotypeFile=XXX])
+	* Update third libraries
+
 2016-06-30  Xiaowei Zhan  <zhanxw@fantasia.csgstat.sph.umich.edu>
 
 	* Add support for MKL library (USE_MKL=[dynamic|static])

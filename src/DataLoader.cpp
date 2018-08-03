@@ -4,9 +4,9 @@
 #include <vector>
 
 #include "CommonFunction.h"
-#include "GenotypeExtractor.h"
 #include "Indexer.h"
 #include "ModelUtil.h"  // copy()
+#include "VCFGenotypeExtractor.h"
 
 #include "base/IO.h"
 #include "base/Logger.h"
@@ -313,7 +313,7 @@ int DataLoader::loadMarkerAsCovariate(const std::string& inVcf,
   this->FLAG_condition = marker;
 
   Matrix geno;
-  GenotypeExtractor ge(FLAG_inVcf);
+  VCFGenotypeExtractor ge(FLAG_inVcf);
   ge.excludeAllPeople();
   ge.includePeople(phenotype.getRowName());
   ge.setRangeList(marker);
@@ -407,7 +407,10 @@ int DataLoader::loadMultiplePhenotype(const std::string& multiplePhenotype,
 
   // read in ped
   TextMatrix pedMat;
-  pedMat.readFile(FLAG_pheno, TextMatrix::HAS_HEADER);
+  if (pedMat.readFile(FLAG_pheno, TextMatrix::HAS_HEADER)) {
+    logger->error("Failed to load phenotype file [ %s ]!", FLAG_pheno.c_str());
+    exit(1);
+  }
   if (pedMat.nrow() == 0 || pedMat.header()[0] != "fid" ||
       pedMat.header()[1] != "iid") {
     logger->warn("Wrong phenotype file [ %s ]", pheno.c_str());
@@ -425,10 +428,15 @@ int DataLoader::loadMultiplePhenotype(const std::string& multiplePhenotype,
 
   // read in cov
   TextMatrix covMat;
-  covMat.readFile(FLAG_cov, TextMatrix::HAS_HEADER);
-  if (covMat.nrow() == 0 || covMat.header()[0] != "fid" ||
-      covMat.header()[1] != "iid") {
-    logger->warn("Wrong covariate file [ %s ]", covar.c_str());
+  if (covMat.readFile(FLAG_cov, TextMatrix::HAS_HEADER)) {
+    logger->error("Failed to load covariate file [ %s ]!", FLAG_cov.c_str());
+    exit(1);
+  }
+  if (covMat.nrow() == 0 || tolower(covMat.header()[0]) != "fid" ||
+      tolower(covMat.header()[1]) != "iid") {
+    logger->warn(
+        "Wrong covariate file - empty or unrecognized header line [ %s ]",
+        covar.c_str());
     exit(1);
   }
   covMat.setRowNameByCol("iid");
@@ -516,7 +524,7 @@ int DataLoader::useResidualAsPhenotype() {
   const int numCovariate = covariate.ncol();
 
   copyPhenotype(phenotype, &pheno);
-  copyCovariateAndIntercept(covariate.nrow(), covariate, &covAndInt);
+  copyCovariateAndIntercept(pheno.Length(), covariate, &covAndInt);
   if (!lr.FitLinearModel(covAndInt, pheno)) {
     if (numCovariate > 0) {
       logger->error(
@@ -608,12 +616,12 @@ int DataLoader::inverseNormalizePhenotype() {
     return 0;
   }
 
-  logger->info("Now applying inverse normalize transformation");
+  logger->info("Now applying inverse normalization transformation");
   std::vector<double> v;
   phenotype.extractCol(0, &v);
   inverseNormalizeLikeMerlin(&v);
   phenotype.setCol(0, v);
-  logger->info("DONE: inverse normal transformation finished");
+  logger->info("DONE: inverse normalization transformation finished");
 
   return 0;
 }
@@ -1288,7 +1296,7 @@ int _loadSex(const std::string& fn,
       (*sex)[idx] = -9;
     }
   }
-  logger->info("Loaded %d male, %d female and %d sex-unknonw samples from %s",
+  logger->info("Loaded %d male, %d female and %d sex-unknown samples from %s",
                nMale, nFemale, nUnknonw, fn.c_str());
   return 0;
 }

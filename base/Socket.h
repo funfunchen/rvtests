@@ -9,8 +9,10 @@ struct addrinfo;
 class Socket {
  public:
   Socket(const std::string& host, int port);
+  Socket(const std::string& host, int port, double timeoutSeconds);
   virtual ~Socket();
   int connect(const std::string& host, int port);
+  int timedConnect(const std::string& host, int port, double seconds);
   void close();
   int send(const std::string& msg);
   int recv(void* buf, int len);
@@ -23,7 +25,7 @@ class Socket {
   struct addrinfo* servinfo;
   int fd;
   bool usable;
-  char buffer[4096];
+  // char buffer[4096];
   bool quiet;
 };
 

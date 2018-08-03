@@ -2,12 +2,8 @@
 #define _LINEARREGRESSIONSCORETEST_H_
 
 #include <cmath>
-#include "MathCholesky.h"
-#include "MathMatrix.h"
-#include "MathSVD.h"
-#include "MathStats.h"
-
-#include "LinearRegression.h"
+#include "libsrc/MathMatrix.h"
+#include "regression/LinearRegression.h"
 
 class LinearRegressionScoreTest {
  public:
@@ -43,7 +39,8 @@ class LinearRegressionScoreTest {
   const Matrix& GetU() const { return this->Umatrix; };
   const Matrix& GetV() const { return this->Vmatrix; };
   const Matrix& GetBeta() const { return this->betaMatrix; }
-  const double GetSigma2() const { return this->lr.GetSigma2(); };
+  double GetSigma2() const { return this->lr.GetSigma2(); };
+  const double GetSEBeta(int idx) const;
 
   // get estimates from null models
   Vector& GetNullCovEst() { return this->lr.GetCovEst(); };  // (X'X)^{-1} X'Y

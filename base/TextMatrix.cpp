@@ -34,14 +34,58 @@ int TextMatrix::readFile(const std::string& fn, int flag) {
         rowName.push_back(fd[0]);
         this->mat.push_back(d);
       } else {
+        if (lineNo != 1 && fd.size() != this->colName.size()) {
+          fprintf(
+              stderr,
+              "At line %d, the number of columns does not equal to [ %d ]!\n",
+              lineNo, (int)colName.size());
+          return -1;
+        }
         this->mat.push_back(fd);
         this->rowName.push_back("R");
-        this->rowName[rowName.size() - 1] += toString(rowName.size());
+        this->rowName.back() += toString(rowName.size());
       }
     }
   }
+  assert(this->rowName.size() == (size_t) this->nrow());
+  assert(this->colName.size() == (size_t) this->ncol());
   return 0;
 }
+
+int TextMatrix::writeFile(const std::string& fn, int flag) const {
+  FileWriter fw(fn);
+  const int NR = nrow();
+  const int NC = ncol();
+  if (flag & TextMatrix::OUTPUT_HEADER) {
+    if (flag & TextMatrix::OUTPUT_ROWNAME) {
+      fw.printf("R%dC%d", NR, NC);
+    }
+    for (size_t i = 0; i != colName.size(); ++i) {
+      fw.write("\t");
+      fw.write(colName[i].c_str());
+    }
+    fw.write("\n");
+  }
+  for (int i = 0; i < NR; ++i) {
+    if (flag & TextMatrix::OUTPUT_ROWNAME) {
+      fw.write(rowName[i].c_str());
+      for (int j = 0; j < NC; ++j) {
+        fw.write("\t");
+        fw.write(mat[i][j].c_str());
+      }
+    } else {  // no rowname
+      for (int j = 0; j < NC; ++j) {
+        if (j) {
+          fw.write("\t");
+        }
+        fw.write(mat[i][j].c_str());
+      }
+    }
+    fw.write("\n");
+  }
+  return 0;
+}
+
 const std::vector<std::string> TextMatrix::header() const { return colName; }
 
 int TextMatrix::keepCol(const std::vector<std::string>& name) {
@@ -61,6 +105,7 @@ int TextMatrix::keepCol(const std::vector<std::string>& name) {
   for (int i = 0; i < nr; ++i) {
     removeByIndex(indexToRemove, &mat[i]);
   }
+  assert(name.size() == (size_t)ncol());
   return 0;
 }
 

@@ -4,8 +4,12 @@
 #include <algorithm>
 #include <map>
 #include <set>
-#include "Utils.h"
-#include "gsl/gsl_cdf.h"
+#include "base/Indexer.h"
+#include "base/Utils.h"
+#include "third/gsl/include/gsl/gsl_cdf.h"
+
+extern int stringTokenize(const std::string& str, const char delim,
+                          std::vector<std::string>* result);
 
 //////////////////////////////////////////////////
 // Statistics functions
@@ -13,8 +17,8 @@
 template <class T>
 class OrderFunction {
  public:
-  OrderFunction(T& t) : v(t){};
-  bool operator()(int i, int j) { return v[i] < v[j]; };
+  OrderFunction(T& t) : v(t) {}
+  bool operator()(int i, int j) { return v[i] < v[j]; }
   const T& v;
 };
 
@@ -36,7 +40,7 @@ inline void order(std::vector<double>& in, std::vector<int>* ord) {
 
   OrderFunction<std::vector<double> > func(in);
   std::sort(ord->begin(), ord->end(), func);
-};
+}
 
 inline void order(std::vector<int>& in, std::vector<int>* ord) {
   ord->resize(in.size());
@@ -44,7 +48,7 @@ inline void order(std::vector<int>& in, std::vector<int>* ord) {
 
   OrderFunction<std::vector<int> > func(in);
   std::sort(ord->begin(), ord->end(), func);
-};
+}
 
 /**
  * Calculate rank, using average for ties.
@@ -72,13 +76,13 @@ inline void calculateRank(std::vector<double>& in, std::vector<double>* out) {
   for (size_t i = 0; i != in.size(); ++i) {
     (*out)[i] = counter[in[i]];
   }
-};
+}
 
-inline double pnorm(double x) { return gsl_cdf_ugaussian_P(x); };
-inline double qnorm(double x) { return gsl_cdf_ugaussian_Pinv(x); };
+inline double pnorm(double x) { return gsl_cdf_ugaussian_P(x); }
+inline double qnorm(double x) { return gsl_cdf_ugaussian_Pinv(x); }
 inline double qnorm(double x, double sigma) {
   return gsl_cdf_gaussian_Pinv(x, sigma);
-};
+}
 
 inline double calculateMean(const std::vector<double>& v) {
   double s = 0.0;
@@ -163,10 +167,7 @@ inline void inverseNormalizeLikeR(std::vector<double>* y) {
 }
 
 inline void zero(std::vector<double>* y) {
-  const size_t n = y->size();
-  for (size_t i = 0; i < n; i++) {
-    (*y)[i] = 0.0;
-  }
+  std::fill(y->begin(), y->end(), 0.0);
 }
 
 inline void standardize(std::vector<double>* y) {
@@ -185,10 +186,50 @@ inline void standardize(std::vector<double>* y) {
     (*y)[i] /= sd;
   }
   // logger->info("Done: centering to 0.0 and scaling to 1.0 finished.");
-};
+}
+
+/**
+ * Look up an element @param elem from @param vec
+ * @return index if found, or -1 if not.
+ */
+inline int which(const std::vector<std::string>& vec, const char* elem) {
+  for (size_t i = 0; i != vec.size(); ++i) {
+    if (vec[i] == elem) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Construct a indice @param index for @param a such that a[index] == b
+ * NOTE: similar to mathc() in R.
+ * @param nomatch, when an element in @param a are not in @param b, this value
+ * will be used as an index
+ * @return number of elements that are matched
+ * e.g. a = ["D", "B", "A"] b = ["A", "B", "C"],
+ * match(a, b, index) will return [-1, 1, 0]
+ */
+inline int match(const std::vector<std::string>& a,
+                 const std::vector<std::string>& b, std::vector<int>* index,
+                 int nomatch = -1) {
+  int numMatched = 0;
+  Indexer idx(b);
+  index->reserve(a.size());
+  for (size_t i = 0; i != a.size(); ++i) {
+    index->push_back(idx[a[i]]);
+    if (index->back() == -1) {
+      index->back() = nomatch;
+    } else {
+      numMatched++;
+    }
+  }
+
+  return numMatched;
+}
 
 //////////////////////////////////////////////////
-// STL based functions
+// STL based functions related to set
 //////////////////////////////////////////////////
 
 /**
@@ -210,6 +251,14 @@ inline void makeSet(const std::vector<T>& in, std::set<T>* s) {
   if (in.empty()) return;
 
   for (size_t i = 0; i < in.size(); i++) s->insert(in[i]);
+}
+
+template <class T>
+inline std::set<T> makeSet(const std::vector<T>& in) {
+  std::set<T> s;
+  s.clear();
+  for (size_t i = 0; i < in.size(); i++) s.insert(in[i]);
+  return s;
 }
 
 template <class T>
@@ -237,6 +286,22 @@ inline void makeMap(const std::vector<std::string>& in,
     if (s->find(in[i]) != s->end()) continue;
     (*s)[in[i]] = i;
   }
+}
+
+inline void makeMap(const std::string& in, std::map<char, int>* s) {
+  s->clear();
+  if (in.empty()) return;
+
+  for (size_t i = 0; i < in.size(); i++) {
+    if (s->find(in[i]) != s->end()) continue;
+    (*s)[in[i]] = i;
+  }
+}
+
+inline std::map<char, int> makeMap(const std::string& in) {
+  std::map<char, int> s;
+  makeMap(in, &s);
+  return s;
 }
 
 /**
@@ -286,7 +351,7 @@ inline int removeByIndex(const std::vector<int>& index,
 
 template <class T>
 struct FuncInSet {
-  FuncInSet(const std::set<T>& s) : data(s){};
+  FuncInSet(const std::set<T>& s) : data(s) {}
   bool operator()(T& s) const {
     if (this->data.count(s)) {
       return true;
@@ -297,7 +362,7 @@ struct FuncInSet {
 };
 template <class T>
 struct FuncNotInSet {
-  FuncNotInSet(const std::set<T>& s) : data(s){};
+  FuncNotInSet(const std::set<T>& s) : data(s) {}
   bool operator()(T& s) const {
     if (this->data.count(s)) {
       return false;
@@ -325,7 +390,23 @@ inline std::vector<T> intersect(const std::vector<T>& a,
 }
 
 /**
- * Remove elements from @param b if they exist in @param a
+ * Test all elements in @param a exist in @param b
+ */
+template <class T>
+bool isSubset(const std::vector<T>& a, const std::vector<T>& b) {
+  std::set<T> s;
+  makeSet(b, &s);
+  for (typename std::vector<T>::const_iterator it = a.begin(); it != a.end();
+       ++it) {
+    if (s.count(*it) == 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Remove elements from @param b if they exist in @param a, i.e. set(b) - set(a)
  */
 template <class T>
 inline int remove(const std::vector<T>& a, std::vector<T>* b) {
@@ -337,7 +418,7 @@ inline int remove(const std::vector<T>& a, std::vector<T>* b) {
 }
 
 /**
- *
+ * Return set(a) - set(b)
  */
 template <class T>
 inline std::vector<T> setSubtract(const std::vector<T>& a,
@@ -389,14 +470,4 @@ int which(const std::vector<T>& vec, T& elem) {
   return -1;
 }
 #endif
-
-inline int which(const std::vector<std::string>& vec, const char* elem) {
-  for (size_t i = 0; i != vec.size(); ++i) {
-    if (vec[i] == elem) {
-      return i;
-    }
-  }
-  return -1;
-}
-
 #endif /* _COMMONFUNCTION_H_ */
